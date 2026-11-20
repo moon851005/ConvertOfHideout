@@ -718,13 +718,14 @@
                     <details class="help">
                         <summary>使用說明</summary>
                         <div>
-                            <p>勾選要填充的封閉圖層，設定總點數後按「建立背景圖層」。總點數會依各區域的面積比例分配，每個來源圖層會產生一個「背景」圖層，匯出時使用「背景物件」。</p>
+                            <p>先在圖層清單選取要填充的封閉圖層，設定總點數後按「建立背景圖層」。會在這個圖層後面產生一個「背景」圖層，匯出時使用「背景物件」。</p>
                             <p><b>挖空</b>：勾選後，被另一個封閉圖層完全包住的封閉圖層（例如臉的外框裡的眼睛）會被當成洞，洞裡不放點。</p>
                             <p><b>離邊界距離</b>：點與圖層邊線的最小距離（原圖像素），避免背景物件壓到線稿。</p>
                         </div>
                     </details>
                     <div class="panel-title" style="margin-top:0">來源圖層</div>
-                    <div class="fill-src" id="fillSourceList"></div>
+                    <div class="status" id="fillSourceInfo" style="margin-top:0"></div>
+                    <div class="hint">填充主畫面右側圖層清單裡目前選取的圖層；換一個圖層會自動更新。</div>
                     <div class="optrow">
                         <div class="row" style="margin-top:0">
                             <label class="field">總點數

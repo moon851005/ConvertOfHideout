@@ -842,6 +842,32 @@ function pruneSkeletonSpurs(mask, w, h, maxSpurLen) {
     return arr;
 }
 
+// 線條區塊是否圍出封閉區域：在區塊外框範圍內，從邊界用 4-鄰往內灌背景，灌不到的背景就是被線圍住的洞。
+// 4-鄰灌不過斜角相接的像素，所以只靠斜角連起來的圈也算封閉。
+function componentEnclosesHole(mask, w, h, minHole) {
+    let x0 = w, y0 = h, x1 = -1, y1 = -1;
+    for (let y = 0; y < h; y++) {
+        const row = y * w;
+        for (let x = 0; x < w; x++) {
+            if (!mask[row + x]) continue;
+            if (x < x0) x0 = x;
+            if (x > x1) x1 = x;
+            if (y < y0) y0 = y;
+            if (y > y1) y1 = y;
+        }
+    }
+    if (x1 < 0 || x1 - x0 < 2 || y1 - y0 < 2) return false;
+    const cw = x1 - x0 + 3, ch = y1 - y0 + 3;   // 四周各留 1px 空白，讓背景可以從外圈灌進來
+    const crop = new Uint8Array(cw * ch);
+    for (let y = y0; y <= y1; y++) {
+        for (let x = x0; x <= x1; x++) crop[(y - y0 + 1) * cw + (x - x0 + 1)] = mask[y * w + x];
+    }
+    const outside = floodFill4(cw, ch, (i) => !crop[i], borderSeeds(cw, ch));
+    let holes = 0;
+    for (let i = 0; i < cw * ch; i++) if (!crop[i] && !outside[i]) holes++;
+    return holes >= (minHole || 4);
+}
+
 function orderSkeletonPath(mask, w, h) {
     const pts = [];
     for (let y = 0; y < h; y++) {
@@ -851,10 +877,33 @@ function orderSkeletonPath(mask, w, h) {
     }
     if (pts.length <= 2) return pts;
 
+    // 從線的一端開始走：沿骨架做 BFS，離任意起點「步數最遠」的像素就是線的一端。
+    // 開放的線（C 字、弧線）頭尾才會是真正的兩端，不會從中間開始、走完一半再跳回去，
+    // 害頭尾黏在一起被誤判成閉合。（線頭的骨架常是一小團，不能只靠「只有 1 個鄰居」找端點）
+    const idxAt = new Int32Array(w * h).fill(-1);
+    pts.forEach((p, i) => { idxAt[p.y * w + p.x] = i; });
+    const seen = new Uint8Array(pts.length);
+    let queue = [0], startIdx = 0;
+    seen[0] = 1;
+    while (queue.length) {
+        const next = [];
+        for (const i of queue) {
+            for (const [ox, oy] of N8) {
+                const nx = pts[i].x + ox, ny = pts[i].y + oy;
+                if (nx < 0 || ny < 0 || nx >= w || ny >= h) continue;
+                const j = idxAt[ny * w + nx];
+                if (j < 0 || seen[j]) continue;
+                seen[j] = 1;
+                next.push(j);
+            }
+        }
+        if (next.length) startIdx = next[0];
+        queue = next;
+    }
     const used = new Uint8Array(pts.length);
-    const ordered = [pts[0]];
-    used[0] = 1;
-    let currIdx = 0;
+    const ordered = [pts[startIdx]];
+    used[startIdx] = 1;
+    let currIdx = startIdx;
     for (let step = 1; step < pts.length; step++) {
         const cx = pts[currIdx].x, cy = pts[currIdx].y;
         let bestIdx = -1, bestDist = Infinity;
@@ -2081,7 +2130,10 @@ function openWin(id) {
         suggestDetectMethod();
     }
     if (id === 'win-export-hideout') generateBatch();
-    if (id === 'win-fill') renderFillSources();
+    if (id === 'win-fill') {
+        $id('fillStatus').textContent = '';
+        renderFillSources();
+    }
 }
 // 跳到設定頁的「線稿用物件」區塊
 function goToObjectSettings(msg) {
@@ -3704,6 +3756,7 @@ function setActiveLayer(i, silent) {
 }
 function renderLayers() {
     syncDotControls();
+    renderFillSources();   // 背景填充視窗開著時，來源跟著目前選取的圖層更新
     const list = $id('layerList');
     // 正在改圖層名稱時不重建清單（才不會把輸入中的文字洗掉），但作用中標記、顏色、點數仍要就地更新
     if (!list) return;
@@ -3849,7 +3902,7 @@ $id('mergeLayersBtn').addEventListener('click', () => {
     renderLayers(); redraw(); updateOutputs();
     statusMsg.textContent = `已把 ${vis.length} 個顯示中的圖層合併成一個，共 ${all.length} 個點。`;
 });
-closeToggle.addEventListener('change', () => { syncActiveLayer(); });
+closeToggle.addEventListener('change', () => { syncActiveLayer(); renderFillSources(); });
 // 「清除全部」算一個步驟：先暫停記錄，等圖層也重設完再記一次，Ctrl+Z 一次就能救回來
 document.addEventListener('click', (e) => { if (e.target.closest && e.target.closest('#clearBtn')) restoringState = true; }, true);
 $id('clearBtn').addEventListener('click', () => {
@@ -4445,8 +4498,9 @@ $id('runDetectBtn').addEventListener('click', () => {
         }
         const use = comps.slice(0, MAX_AUTO_LAYERS);
         const useCenterline = $id('centerlineToggle').checked;
-        const samplers = [], weights = [];
+        const samplers = [], weights = [], rings = [];
         use.forEach(c => {
+            rings.push(useCenterline && componentEnclosesHole(c.mask, W, H));
             if (useCenterline) {
                 const ordered = orderSkeletonPath(pruneSkeletonSpurs(thinMask(c.mask, W, H), W, H, 8), W, H);
                 samplers.push((sp) => resampleBySpacing(ordered, sp));
@@ -4459,7 +4513,9 @@ $id('runDetectBtn').addEventListener('click', () => {
         const counts = N ? allocateCounts(weights, N) : null;
         const label = method === 'black' ? '黑線' : '邊緣';
         samplers.forEach((run, i) => {
-            results.push({name: `${label} ${i + 1}`, pts: N ? fitToCount(run, counts[i]) : run(spacing), close: false});
+            // closeHint：'ring'＝線條圍出一個封閉區域；'grid'＝網格取樣的點沒有順序，不能閉合；'open'＝再看頭尾距離
+            results.push({name: `${label} ${i + 1}`, pts: N ? fitToCount(run, counts[i]) : run(spacing), close: rings[i],
+                closeHint: !useCenterline ? 'grid' : (rings[i] ? 'ring' : 'open')});
         });
     }
     results = results.filter(r => r.pts && r.pts.length);
@@ -4475,15 +4531,23 @@ $id('runDetectBtn').addEventListener('click', () => {
     }
     else if (layers.length === 1 && !layers[0].points.length) { layers = []; }
     const first = layers.length;
-    // 中心線描出來的路徑：頭尾幾乎接在一起（例如圓圈）就視為閉合，其餘（例如一條弧線）維持不閉合
+    // 中心線描出來的路徑：線條本身圍成一圈（遮罩裡有被包住的洞）就閉合；沒有圍住的線，
+    // 只有頭尾缺口很小（不超過約 3 個點距，且不到全長 8%）時才補成閉合，避免 C 字、弧線被多連一條線
     results.forEach(r => {
         const P = r.pts, m = P.length;
-        if (r.close || m < 4 || /^填滿/.test(r.name)) return;
+        if (r.closeHint === 'grid') { r.close = false; return; }
+        if (r.close || r.closeHint !== 'open' || m < 4) return;
+        let len = 0;
         const steps = [];
-        for (let i = 0; i < m - 1; i++) steps.push(Math.hypot(P[i].x - P[i + 1].x, P[i].y - P[i + 1].y));
+        for (let i = 0; i < m - 1; i++) {
+            const d = Math.hypot(P[i].x - P[i + 1].x, P[i].y - P[i + 1].y);
+            steps.push(d);
+            len += d;
+        }
         steps.sort((x, y) => x - y);
         const med = steps[Math.floor(steps.length / 2)] || 0;
-        if (med > 0 && Math.hypot(P[0].x - P[m - 1].x, P[0].y - P[m - 1].y) <= med * 2.2) r.close = true;
+        const gap = Math.hypot(P[0].x - P[m - 1].x, P[0].y - P[m - 1].y);
+        if (med > 0 && gap <= med * 3 && gap <= len * 0.08) r.close = true;
     });
     results.forEach(r => {
         layers.push(newLayer(r.name, r.pts.map(p => workToNatural(p.x, p.y)), r.close));
@@ -4746,11 +4810,21 @@ function holesOf(A, candidates) {
     const inside = candidates.filter(B => B !== A && polygonArea(B.points) < polygonArea(A.points) && allPointsInsidePolygon(B.points, A.points));
     return inside.filter(B => !inside.some(C => C !== B && polygonArea(B.points) < polygonArea(C.points) && allPointsInsidePolygon(B.points, C.points)));
 }
-// 依目前勾選的來源圖層算出每一區的有效面積與分配到的點數
+// 填充來源＝圖層清單裡目前選取（作用中）的圖層；不能填充時回傳原因
+function fillSourceLayer() {
+    syncActiveLayer();
+    const L = layers[activeLayer];
+    if (!L) return {error: '目前沒有選取的圖層。'};
+    if (L.kind === 'fill') return {error: `「${L.name}」是背景圖層，請在圖層清單選取要填充的線稿圖層。`};
+    if (L.points.length < 3) return {error: `「${L.name}」的點不到 3 個，無法圍出區域。`};
+    if (!L.close) return {error: `「${L.name}」不是閉合路徑。請先勾選主畫面下方的「閉合路徑」，或選取其他圖層。`};
+    return {layer: L};
+}
+// 依選取的圖層算出有效面積（扣掉洞）與點數
 function planFill() {
     const all = fillableLayers();
-    const picked = [...document.querySelectorAll('#fillSourceList input[type="checkbox"]:checked')]
-        .map(c => all.find(L => String(L.id) === c.value)).filter(Boolean);
+    const src = fillSourceLayer();
+    const picked = src.layer ? [src.layer] : [];
     const useHoles = $id('fillHolesToggle').checked;
     const regions = picked.map(A => {
         const holes = useHoles ? holesOf(A, all).map(B => B.points) : [];
@@ -4763,41 +4837,26 @@ function planFill() {
     return {regions, n};
 }
 function updateFillPlanInfo() {
-    const {regions, n} = planFill();
-    $id('fillPlanInfo').textContent = regions.length
-        ? `共 ${regions.length} 個區域、總點數 ${n}：` + regions.map(r => `「${r.layer.name}」${r.count} 點`).join('、')
-        : '請至少勾選一個來源圖層。';
-}
-function renderFillSources() {
-    const box = $id('fillSourceList');
-    const all = fillableLayers();
-    // 重新產生清單時保留原本的勾選（第一次開啟才預設勾選顯示中的圖層）
-    const prev = box.querySelector('input[type="checkbox"]')
-        ? new Set([...box.querySelectorAll('input[type="checkbox"]')].filter(c => c.checked).map(c => c.value)) : null;
-    box.innerHTML = '';
-    if (!all.length) {
-        const e = document.createElement('div');
-        e.className = 'empty-note';
-        e.textContent = '目前沒有可填充的圖層：需要「閉合路徑」且至少 3 個點的一般圖層。';
-        box.appendChild(e);
+    const src = fillSourceLayer();
+    const box = $id('fillSourceInfo');
+    $id('fillRunBtn').disabled = !src.layer;
+    if (!src.layer) {
+        box.textContent = src.error;
+        box.classList.add('error');
+        $id('fillPlanInfo').textContent = '';
+        return;
     }
-    all.forEach(L => {
-        const lab = document.createElement('label');
-        lab.className = 'toggle';
-        const cb = document.createElement('input');
-        cb.type = 'checkbox'; cb.value = L.id; cb.checked = prev ? prev.has(String(L.id)) : L.visible;
-        cb.addEventListener('change', updateFillPlanInfo);
-        const dot = document.createElement('span');
-        dot.className = 'dot'; dot.style.cssText = `width:9px;height:9px;border-radius:50%;background:${L.color}`;
-        const nm = document.createElement('span');
-        nm.textContent = L.name;
-        const meta = document.createElement('span');
-        meta.className = 'meta';
-        meta.textContent = `面積 ${Math.round(polygonArea(L.points))}`;
-        lab.append(cb, dot, nm, meta);
-        box.appendChild(lab);
-    });
-    $id('fillStatus').textContent = '';
+    box.classList.remove('error');
+    const {regions, n} = planFill();
+    const r = regions[0];
+    box.textContent = `來源圖層：「${src.layer.name}」（${src.layer.points.length} 個點）`;
+    $id('fillPlanInfo').textContent = r
+        ? `有效面積約 ${Math.round(r.area)}` + (r.holes.length ? `（已扣掉 ${r.holes.length} 個被包住的封閉圖層）` : '') + `，將放置 ${n} 個點。`
+        : '這個圖層圍出的面積是 0，無法填充。';
+}
+// 開著視窗時切換圖層、改閉合，就即時更新來源資訊
+function renderFillSources() {
+    if (currentWin !== 'win-fill') return;
     updateFillPlanInfo();
 }
 ['fillCountInput', 'fillHolesToggle'].forEach(id => $id(id).addEventListener('input', updateFillPlanInfo));
@@ -4806,7 +4865,7 @@ $id('fillRunBtn').addEventListener('click', () => {
     const statusEl = $id('fillStatus');
     const {regions} = planFill();
     if (!regions.length) {
-        statusEl.textContent = '請至少勾選一個有面積的來源圖層。';
+        statusEl.textContent = fillSourceLayer().error || '選取的圖層圍出的面積是 0，無法填充。';
         return;
     }
     const layout = fillLayout();
