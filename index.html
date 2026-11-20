@@ -37,7 +37,6 @@
         <symbol id="i-copy" viewBox="0 0 24 24"><rect x="9" y="9" width="11" height="11" rx="2"/><path d="M5 15V6a2 2 0 0 1 2-2h8"/></symbol>
         <symbol id="i-path" viewBox="0 0 24 24"><path d="M4 18l6-10 5 7 5-10"/><circle cx="4" cy="18" r="1.4"/><circle cx="10" cy="8" r="1.4"/><circle cx="15" cy="15" r="1.4"/><circle cx="20" cy="5" r="1.4"/></symbol>
         <symbol id="i-file" viewBox="0 0 24 24"><path d="M6 3h8l5 5v13H6zM14 3v5h5"/></symbol>
-        <symbol id="i-code" viewBox="0 0 24 24"><path d="M8 7l-5 5 5 5M16 7l5 5-5 5"/></symbol>
         <symbol id="i-check" viewBox="0 0 24 24"><path d="M4 12.5l5 5L20 6.5"/></symbol>
         <symbol id="i-play" viewBox="0 0 24 24"><path d="M7 4.5v15l12-7.5z"/></symbol>
         <symbol id="i-outlier" viewBox="0 0 24 24"><circle cx="7" cy="16" r="1.6"/><circle cx="11" cy="13" r="1.6"/><circle cx="8" cy="10" r="1.6"/><circle cx="19" cy="5" r="2.2"/><path d="M15 9l1.5-1.5" stroke-dasharray="1.5 2.5"/></symbol>
@@ -77,13 +76,7 @@
         <button type="button" class="tool-btn tone t-green" id="importImageBtn"><svg class="ic"><use href="#i-image"/></svg><span class="full">匯入圖片</span><span class="short">圖片</span></button>
         <input type="file" id="fileInput" accept="image/*">
         <button type="button" class="tool-btn tone t-green" data-win="win-hideout"><svg class="ic"><use href="#i-import"/></svg><span class="full">匯入 .hideout</span><span class="short">.hideout</span></button>
-        <div class="menu-wrap">
-            <button type="button" class="tool-btn tone t-amber" id="exportMenuBtn" aria-haspopup="true" aria-expanded="false"><svg class="ic"><use href="#i-export"/></svg>匯出<span class="caret">▾</span></button>
-            <div class="menu" id="exportMenu" hidden>
-                <button type="button" data-win="win-export-coords"><svg class="ic"><use href="#i-code"/></svg>匯出座標（JSON／SVG）</button>
-                <button type="button" data-win="win-export-hideout"><svg class="ic"><use href="#i-file"/></svg>.hideout 批次產生</button>
-            </div>
-        </div>
+        <button type="button" class="tool-btn tone t-amber" data-win="win-export-hideout" title="匯出 .hideout 批次設定"><svg class="ic"><use href="#i-export"/></svg>匯出</button>
     </div>
     <nav class="views" aria-label="頁面切換">
         <button type="button" class="view-tab" data-view="work" aria-current="page" aria-label="工作區"><svg class="ic"><use href="#i-work"/></svg><span class="lbl">工作區</span></button>
@@ -509,60 +502,47 @@
                 </div>
             </section>
 
-            <section class="win win-adj" id="win-export-coords" data-size="lg" hidden aria-label="匯出座標">
-                <header class="win-head"><h2><svg class="ic"><use href="#i-code"/></svg>匯出座標<span class="sub">複製後自動關閉</span></h2><button type="button" class="win-close ghost" aria-label="關閉">✕</button></header>
+            <section class="win win-adj" id="win-export-hideout" data-size="lg" hidden aria-label="匯出">
+                <header class="win-head"><h2><svg class="ic"><use href="#i-export"/></svg>匯出<span class="sub">.hideout 批次設定，複製後自動關閉</span></h2><button type="button" class="win-close ghost" aria-label="關閉">✕</button></header>
                 <div class="win-body">
-
-                    <div class="row" style="margin-top:0">
-                        <div class="seg" role="group" aria-label="匯出格式">
-                            <button type="button" id="formatJson" class="active">JSON 陣列</button>
-                            <button type="button" id="formatSvg">SVG path</button>
-                        </div>
-                        <span class="spacer"></span>
-                        <button class="primary" id="copyBtn"><svg class="ic"><use href="#i-copy"/></svg>複製匯出內容</button>
-                    </div>
-                    <textarea id="exportBox" readonly placeholder="產生座標後，這裡會自動產生匯出內容" style="margin-top:10px"></textarea>
-                    <div class="panel-title">座標清單</div>
-                    <div class="status" id="totalCountSummary">目前尚未產生任何座標</div>
-                    <div id="coordsList">
-                        <div style="color:var(--text-3)">（尚無點）</div>
-                    </div>
-                    <div class="row">
-                        <button id="copyListTextBtn"><svg class="ic"><use href="#i-copy"/></svg>複製清單文字（貼給 Claude 用）</button>
-                        <button id="findOutlierBtn" class="tone t-amber"><svg class="ic"><use href="#i-outlier"/></svg>自動抓離群點</button>
-                    </div>
-                    <div class="status" id="outlierStatus"></div>
-                </div>
-            </section>
-
-            <section class="win win-adj" id="win-export-hideout" data-size="lg" hidden aria-label=".hideout 批次產生">
-                <header class="win-head"><h2><svg class="ic"><use href="#i-file"/></svg>.hideout 批次產生<span class="sub">複製後自動關閉</span></h2><button type="button" class="win-close ghost" aria-label="關閉">✕</button></header>
-                <div class="win-body">
-
                     <div class="panel-title" style="margin-top:0">線稿用物件</div>
-                    <p class="desc">選一組存好的物件（名稱、hash、r、fv），座標清單裡每一個點都會套用同一組設定，只換成各自的 x, y。物件在「設定 › 線稿用物件」新增與修改。</p>
+                    <p class="desc">座標清單裡每一個點都會套用同一組物件設定（名稱、hash、r、fv），只換成各自的 x, y。開啟視窗或換一組物件時會自動重新產生；物件在「設定 › 線稿用物件」新增與修改。</p>
                     <div class="row" style="margin-top:0">
                         <select id="objectSelect" aria-label="線稿用物件" style="flex:1 1 220px"></select>
                         <button type="button" id="manageObjectsBtn"><svg class="ic"><use href="#i-settings"/></svg>管理物件</button>
                     </div>
                     <div class="hint" id="objectInfo"></div>
-                    <details class="help" id="templateDetails" style="margin-top:10px">
-                        <summary>或直接貼上一組範例（有貼內容時優先使用）</summary>
-                        <div>
-                            <textarea id="templateBox" style="min-height:120px"
-                                placeholder='貼上一組範例，例如：&#10;"洞穴石化像": {&#10;      "hash": 2014424642,&#10;      "x": 772,&#10;      "y": 604,&#10;      "r": 50525,&#10;      "fv": 4&#10;    },'></textarea>
-                            <div class="row"><button type="button" id="saveTemplateAsObjectBtn"><svg class="ic"><use href="#i-plus"/></svg>存成物件預設</button></div>
-                        </div>
-                    </details>
                     <div class="row">
-                        <button id="generateBatchBtn" class="primary"><svg class="ic"><use href="#i-play"/></svg>批次產生</button>
-                        <span class="spacer"></span>
-                        <button id="batchCopyBtn"><svg class="ic"><use href="#i-copy"/></svg>一鍵複製</button>
+                        <button id="batchCopyBtn" class="primary"><svg class="ic"><use href="#i-copy"/></svg>一鍵複製批次結果</button>
                     </div>
                     <div class="status" id="batchStatus"></div>
                     <div class="panel-title">批次結果</div>
-                    <textarea id="batchExportBox" readonly placeholder="按「批次產生」後，這裡會自動產生可複製貼上的區塊"
-                        style="min-height:200px"></textarea>
+                    <textarea id="batchExportBox" readonly placeholder="開啟視窗後會自動產生可複製貼上的區塊" style="min-height:200px"></textarea>
+
+                    <details class="help" id="coordsDetails" style="margin-top:14px">
+                        <summary>額外功能：匯出座標（JSON／SVG）、座標清單、離群點</summary>
+                        <div>
+                            <div class="row" style="margin-top:0">
+                                <div class="seg" role="group" aria-label="匯出格式">
+                                    <button type="button" id="formatJson" class="active">JSON 陣列</button>
+                                    <button type="button" id="formatSvg">SVG path</button>
+                                </div>
+                                <span class="spacer"></span>
+                                <button id="copyBtn"><svg class="ic"><use href="#i-copy"/></svg>複製座標</button>
+                            </div>
+                            <textarea id="exportBox" readonly placeholder="產生座標後，這裡會自動產生匯出內容" style="margin-top:10px"></textarea>
+                            <div class="panel-title">座標清單</div>
+                            <div class="status" id="totalCountSummary">目前尚未產生任何座標</div>
+                            <div id="coordsList">
+                                <div style="color:var(--text-3)">（尚無點）</div>
+                            </div>
+                            <div class="row">
+                                <button id="copyListTextBtn"><svg class="ic"><use href="#i-copy"/></svg>複製清單文字（貼給 Claude 用）</button>
+                                <button id="findOutlierBtn" class="tone t-amber"><svg class="ic"><use href="#i-outlier"/></svg>自動抓離群點</button>
+                            </div>
+                            <div class="status" id="outlierStatus"></div>
+                        </div>
+                    </details>
                 </div>
             </section>
 

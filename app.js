@@ -1598,32 +1598,41 @@ function parseTemplate(text) {
     };
 }
 
-$id('generateBatchBtn').addEventListener('click', () => {
+// .hideout 批次產生：開啟匯出視窗、切換物件時自動呼叫。
+// 點來自所有「顯示中且有點」的圖層（exportPoints），空圖層直接略過，不會因為作用中圖層沒點就失敗。
+function generateBatch() {
     const statusEl = $id('batchStatus');
     const exportEl = $id('batchExportBox');
-    if (points.length === 0) {
-        statusEl.textContent = '目前沒有座標，請先描邊或選取。';
-        exportEl.value = '';
+    exportEl.value = '';
+    if (exportPoints().length === 0) {
+        statusEl.textContent = visibleLayers().length
+            ? '顯示中的圖層都沒有座標，請先描邊、選取或偵測。'
+            : '目前沒有顯示中的圖層，請先在圖層清單打開至少一個圖層。';
         return;
     }
     const tpl = currentObjectTemplate();
     if (!tpl) {
-        statusEl.textContent = $id('templateBox').value.trim() ? '無法從貼上的範例解析出名稱與 hash，請確認格式。' : '還沒有可用的物件：請先在「設定 › 線稿用物件」新增一組，或在下面直接貼上一組範例。';
+        statusEl.textContent = '還沒有可用的物件，請按「管理物件」新增一組。';
         return;
     }
     const rel = getRelPoints();
+    if (!rel.length) {
+        statusEl.textContent = '匯出座標是空的，請先描邊、選取或偵測。';
+        return;
+    }
     const lines = rel.map(p => {
         return `    "${tpl.name}": {\n      "hash": ${tpl.hash},\n      "x": ${p[0]},\n      "y": ${p[1]},\n      "r": ${tpl.r},\n      "fv": ${tpl.fv}\n    },`;
     });
     exportEl.value = lines.join('\n');
-    statusEl.textContent = `已用物件「${tpl.name}」產生 ${rel.length} 組設定（hash=${tpl.hash}，r=${tpl.r}，fv=${tpl.fv}，只改 x, y）。`;
-});
-
+    const skipped = visibleLayers().filter(L => !L.points.length).length;
+    statusEl.textContent = `已用物件「${tpl.name}」產生 ${rel.length} 組設定（hash=${tpl.hash}，r=${tpl.r}，fv=${tpl.fv}，只改 x, y）` +
+        (skipped ? `，已略過 ${skipped} 個沒有座標的圖層。` : '。');
+}
 $id('batchCopyBtn').addEventListener('click', async () => {
     const exportEl = $id('batchExportBox');
     const statusEl = $id('batchStatus');
     if (!exportEl.value) {
-        statusEl.textContent = '目前沒有批次內容可以複製，請先「產生批次設定」。';
+        statusEl.textContent = '目前沒有批次內容可以複製。';
         return;
     }
     statusEl.textContent = COPY_MSG[await copyText(exportEl.value, exportEl)];
@@ -1995,13 +2004,16 @@ function markToolButtons() {
 function openWin(id) {
     const el = $id(id);
     if (!el) return;
+    if (id === 'win-export-hideout' && !hasUsableObject()) {
+        goToObjectSettings('還沒有可用的線稿用物件，請先在這裡新增一組（名稱與 hash 必填），再回工作區按「匯出」。');
+        return;
+    }
     if (currentWin && currentWin !== id) $id(currentWin).hidden = true;
     el.hidden = false;
     currentWin = id;
     $id('adjModal').hidden = false;
     $id('adjModalBox').dataset.size = el.dataset.size || 'md';
     $id('snackbar').classList.remove('show');
-    $id('exportMenu').hidden = true;
     markToolButtons();
     renderPreview();
     if (id === 'win-scale') renderBoundaryPreview();
@@ -2013,6 +2025,17 @@ function openWin(id) {
         $id('detectStatus').textContent = '';
         $id('detectStatus').classList.remove('error');
         suggestDetectMethod();
+    }
+    if (id === 'win-export-hideout') generateBatch();
+}
+// 跳到設定頁的「線稿用物件」區塊
+function goToObjectSettings(msg) {
+    closeWin();
+    showView('settings');
+    $id('objectCard').scrollIntoView({block: 'start'});
+    if (msg) {
+        $id('objectStatus').textContent = msg;
+        showSnack(msg);
     }
 }
 function closeWin() {
@@ -2055,7 +2078,7 @@ document.querySelectorAll('.win').forEach(win => {
 });
 document.addEventListener('keydown', (e) => {
     if (e.key !== 'Escape' || isCanvasFullscreen) return;
-    if (currentWin) closeWin(); else $id('exportMenu').hidden = true;
+    if (currentWin) closeWin();
 });
 $id('adjBackdrop').addEventListener('click', closeWin);
 
@@ -2065,17 +2088,6 @@ new MutationObserver(() => { $id('adjStatus').textContent = statusMsg.textConten
 // .hideout 匯入／批次的訊息也同步到主狀態列
 new MutationObserver(() => { statusMsg.textContent = $id('batchStatus').textContent; })
     .observe($id('batchStatus'), {childList: true, characterData: true, subtree: true});
-
-// ---- 匯出選單 ----
-$id('exportMenuBtn').addEventListener('click', (e) => {
-    e.stopPropagation();
-    const open = $id('exportMenu').hidden;
-    $id('exportMenu').hidden = !open;
-    $id('exportMenuBtn').setAttribute('aria-expanded', open ? 'true' : 'false');
-});
-document.addEventListener('click', (e) => {
-    if (!e.target.closest || !e.target.closest('.menu-wrap')) $id('exportMenu').hidden = true;
-});
 
 // ---- 在圖上點選（原點／邊界角點）時的提示列 ----
 const pickBar = $id('pickBar');
@@ -4508,7 +4520,7 @@ document.addEventListener('click', () => {
     }
     function updateInfo() {
         const o = store.list.find(x => String(x.id) === $id('objectSelect').value);
-        $id('objectInfo').textContent = o ? `hash ${o.hash}　r ${o.r}　fv ${o.fv}` : '請先按「管理物件」新增一組，或在下面直接貼上一組範例。';
+        $id('objectInfo').textContent = o ? `hash ${o.hash}　r ${o.r}　fv ${o.fv}` : '請先按「管理物件」新增一組。';
     }
     function renderList() {
         const box = $id('objectList');
@@ -4582,26 +4594,18 @@ document.addEventListener('click', () => {
     $id('addObjectFromPasteBtn').addEventListener('click', () => {
         if (addFromText($id('objectPasteBox').value, $id('objectStatus'))) $id('objectPasteBox').value = '';
     });
-    $id('saveTemplateAsObjectBtn').addEventListener('click', () => {
-        if (addFromText($id('templateBox').value, $id('batchStatus'))) {
-            $id('templateBox').value = '';
-            $id('templateDetails').open = false;
-        }
-    });
     $id('objectSelect').addEventListener('change', () => {
         updateInfo();   // 這裡只是這次匯出臨時換一組；預設用哪一組在設定頁圈選
+        if (currentWin === 'win-export-hideout') generateBatch();
     });
-    $id('manageObjectsBtn').addEventListener('click', () => {
-        closeWin();
-        showView('settings');
-        $id('objectCard').scrollIntoView({block: 'start'});
-    });
-    // 匯出時用的物件：有直接貼範例就以貼上的為準，否則用選到的那組預設
+    $id('manageObjectsBtn').addEventListener('click', () => goToObjectSettings());
+    // 匯出時用的物件：匯出視窗裡選到的那組（預設是設定頁圈選的）
     window.currentObjectTemplate = function () {
-        const pasted = $id('templateBox').value;
-        if (pasted.trim()) return parseTemplate(pasted);
         const o = store.list.find(x => String(x.id) === $id('objectSelect').value);
         return usable(o) ? {name: o.name.trim(), hash: String(o.hash), r: intStr(o.r, '0'), fv: intStr(o.fv, '0')} : null;
+    };
+    window.hasUsableObject = function () {
+        return store.list.some(usable);
     };
     renderList();
     renderSelect();
