@@ -179,6 +179,7 @@ let mode = 'select';                      // select／manual／wand／brush／or
 let prevMode = 'manual';                  // origin／boundary 這類暫時模式結束後要回到的模式
 let showLines = false;                    // 是否畫出連接線與斷開警示線
 let showImage = true;                     // 主畫布是否顯示原圖
+let showPath = true;                      // 顯示圖片時，是否畫出各圖層的描邊路徑線（作用中圖層是紅線）
 
 // 智慧選取的累積遮罩（Shift 加入／Alt 減去）
 let selectionMask = null;
@@ -347,6 +348,13 @@ function renderPreview() {
     renderBoundaryPreview();
 }
 
+$id('togglePathBtn').addEventListener('click', () => {
+    showPath = !showPath;
+    $id('togglePathBtn').classList.toggle('active', showPath);
+    $id('togglePathBtn').setAttribute('aria-pressed', showPath ? 'true' : 'false');
+    $id('togglePathLabel').textContent = showPath ? '路徑線：開' : '路徑線：關';
+    redraw();
+});
 $id('toggleGapLineBtn').addEventListener('click', () => {
     showLines = !showLines;
     $id('toggleGapLineLabel').textContent = showLines ? '隱藏連接線／警示線' : '顯示連接線／警示線';
@@ -842,86 +850,233 @@ function pruneSkeletonSpurs(mask, w, h, maxSpurLen) {
     return arr;
 }
 
-// 線條區塊是否圍出封閉區域：在區塊外框範圍內，從邊界用 4-鄰往內灌背景，灌不到的背景就是被線圍住的洞。
-// 4-鄰灌不過斜角相接的像素，所以只靠斜角連起來的圈也算封閉。
-function componentEnclosesHole(mask, w, h, minHole) {
-    let x0 = w, y0 = h, x1 = -1, y1 = -1;
-    for (let y = 0; y < h; y++) {
-        const row = y * w;
-        for (let x = 0; x < w; x++) {
-            if (!mask[row + x]) continue;
-            if (x < x0) x0 = x;
-            if (x > x1) x1 = x;
-            if (y < y0) y0 = y;
-            if (y > y1) y1 = y;
+// 把細化後的骨架排成一條有順序的路徑。
+// 先把骨架拆成「圖」：分岔點／端點（鄰居數不是 2 的像素，相鄰的併成一個節點）是節點，節點之間一格一格
+// 連著的像素是邊。再找出一條「不重複走同一條邊、總長最長」的走法當主路徑（圓圈、外框這類線會自然走成
+// 一整圈，頭尾回到同一個節點）。沒走到的分岔（例如耳朵內側的線）在它接上主路徑的節點插進去：
+// 走到分岔的尾巴後才跳回主路徑，跳回去的那一段剛好疊在分岔上，不會橫越圖案。
+// 細化後的骨架常有 2 像素厚的地方（斜線階梯、轉角），每個像素都會有 3～4 個鄰居，拆圖時會被當成一大團分岔點。
+// 這裡再把「拿掉也不會讓周圍斷開」的多餘像素刪掉，留下真正 1 像素寬的線；端點（只有 1 個鄰居）保留。
+function thinToSinglePixel(mask, w, h) {
+    const arr = new Uint8Array(mask);
+    let changed = true, guard = 0;
+    while (changed && guard++ < 20) {
+        changed = false;
+        for (let y = 0; y < h; y++) {
+            for (let x = 0; x < w; x++) {
+                if (!arr[y * w + x]) continue;
+                const nbrs = [];
+                for (const [ox, oy] of N8) {
+                    const nx = x + ox, ny = y + oy;
+                    if (nx >= 0 && ny >= 0 && nx < w && ny < h && arr[ny * w + nx]) nbrs.push([ox, oy]);
+                }
+                if (nbrs.length < 2) continue;
+                // 鄰居們在不經過中心點的情況下是否彼此連通（8-鄰）
+                const seen = [0];
+                for (let k = 0; k < seen.length; k++) {
+                    const [ax, ay] = nbrs[seen[k]];
+                    for (let m = 0; m < nbrs.length; m++) {
+                        if (seen.includes(m)) continue;
+                        if (Math.abs(nbrs[m][0] - ax) <= 1 && Math.abs(nbrs[m][1] - ay) <= 1) seen.push(m);
+                    }
+                }
+                if (seen.length === nbrs.length) {
+                    arr[y * w + x] = 0;
+                    changed = true;
+                }
+            }
         }
     }
-    if (x1 < 0 || x1 - x0 < 2 || y1 - y0 < 2) return false;
-    const cw = x1 - x0 + 3, ch = y1 - y0 + 3;   // 四周各留 1px 空白，讓背景可以從外圈灌進來
-    const crop = new Uint8Array(cw * ch);
-    for (let y = y0; y <= y1; y++) {
-        for (let x = x0; x <= x1; x++) crop[(y - y0 + 1) * cw + (x - x0 + 1)] = mask[y * w + x];
-    }
-    const outside = floodFill4(cw, ch, (i) => !crop[i], borderSeeds(cw, ch));
-    let holes = 0;
-    for (let i = 0; i < cw * ch; i++) if (!crop[i] && !outside[i]) holes++;
-    return holes >= (minHole || 4);
+    return arr;
 }
-
 function orderSkeletonPath(mask, w, h) {
+    mask = thinToSinglePixel(mask, w, h);
     const pts = [];
+    const idxAt = new Int32Array(w * h).fill(-1);
     for (let y = 0; y < h; y++) {
         for (let x = 0; x < w; x++) {
-            if (mask[y * w + x]) pts.push({x, y});
-        }
-    }
-    if (pts.length <= 2) return pts;
-
-    // 從線的一端開始走：沿骨架做 BFS，離任意起點「步數最遠」的像素就是線的一端。
-    // 開放的線（C 字、弧線）頭尾才會是真正的兩端，不會從中間開始、走完一半再跳回去，
-    // 害頭尾黏在一起被誤判成閉合。（線頭的骨架常是一小團，不能只靠「只有 1 個鄰居」找端點）
-    const idxAt = new Int32Array(w * h).fill(-1);
-    pts.forEach((p, i) => { idxAt[p.y * w + p.x] = i; });
-    const seen = new Uint8Array(pts.length);
-    let queue = [0], startIdx = 0;
-    seen[0] = 1;
-    while (queue.length) {
-        const next = [];
-        for (const i of queue) {
-            for (const [ox, oy] of N8) {
-                const nx = pts[i].x + ox, ny = pts[i].y + oy;
-                if (nx < 0 || ny < 0 || nx >= w || ny >= h) continue;
-                const j = idxAt[ny * w + nx];
-                if (j < 0 || seen[j]) continue;
-                seen[j] = 1;
-                next.push(j);
+            if (mask[y * w + x]) {
+                idxAt[y * w + x] = pts.length;
+                pts.push({x, y});
             }
         }
-        if (next.length) startIdx = next[0];
-        queue = next;
     }
-    const used = new Uint8Array(pts.length);
-    const ordered = [pts[startIdx]];
-    used[startIdx] = 1;
-    let currIdx = startIdx;
-    for (let step = 1; step < pts.length; step++) {
-        const cx = pts[currIdx].x, cy = pts[currIdx].y;
-        let bestIdx = -1, bestDist = Infinity;
-        for (let i = 0; i < pts.length; i++) {
-            if (used[i]) continue;
-            const dx = pts[i].x - cx, dy = pts[i].y - cy;
-            const d = dx * dx + dy * dy;
-            if (d < bestDist) {
-                bestDist = d;
-                bestIdx = i;
+    const n = pts.length;
+    if (n <= 2) return pts;
+    const nb = pts.map(p => {
+        const out = [];
+        for (const [ox, oy] of N8) {
+            const nx = p.x + ox, ny = p.y + oy;
+            if (nx < 0 || ny < 0 || nx >= w || ny >= h) continue;
+            const j = idxAt[ny * w + nx];
+            if (j >= 0) out.push(j);
+        }
+        return out;
+    });
+    const isNode = nb.map(a => a.length !== 2);
+    // 相鄰的節點像素併成同一個節點
+    const nodeOf = new Int32Array(n).fill(-1);
+    const nodes = [];
+    for (let i = 0; i < n; i++) {
+        if (!isNode[i] || nodeOf[i] >= 0) continue;
+        const id = nodes.length, members = [i];
+        nodeOf[i] = id;
+        for (let k = 0; k < members.length; k++) {
+            for (const j of nb[members[k]]) {
+                if (isNode[j] && nodeOf[j] < 0) {
+                    nodeOf[j] = id;
+                    members.push(j);
+                }
             }
         }
-        if (bestIdx === -1) break;
-        used[bestIdx] = 1;
-        ordered.push(pts[bestIdx]);
-        currIdx = bestIdx;
+        nodes.push(members);
     }
-    return ordered;
+    const rep = id => pts[nodes[id][0]];
+    // 沿著鄰居數為 2 的像素走，直到碰到節點；edgeUsed 避免同一條邊從兩頭各走一次
+    const edgeUsed = new Uint8Array(n);
+    const edges = [];   // {a, b, px: [pts...]}
+    const walk = (from, first) => {
+        const px = [];
+        let prev = from, cur = first;
+        while (true) {
+            if (isNode[cur]) return {end: nodeOf[cur], px};
+            edgeUsed[cur] = 1;
+            px.push(pts[cur]);
+            const nxt = nb[cur].find(k => k !== prev && !(edgeUsed[k] && !isNode[k]));
+            if (nxt === undefined) return {end: -1, px};
+            prev = cur;
+            cur = nxt;
+        }
+    };
+    nodes.forEach((members, id) => {
+        for (const i of members) {
+            for (const j of nb[i]) {
+                if (isNode[j] || edgeUsed[j]) continue;
+                const r = walk(i, j);
+                const b = r.end >= 0 ? r.end : id;
+                if (b === id && r.px.length < 3) continue;   // 節點旁邊的小毛邊
+                edges.push({a: id, b, px: r.px});
+            }
+        }
+    });
+    // 沒有任何節點的部分＝單純的一圈：直接繞一圈
+    const loops = [];
+    for (let i = 0; i < n; i++) {
+        if (isNode[i] || edgeUsed[i]) continue;
+        const px = [pts[i]];
+        edgeUsed[i] = 1;
+        let prev = -1, cur = i;
+        while (true) {
+            const nxt = nb[cur].find(k => k !== prev && !edgeUsed[k]);
+            if (nxt === undefined) break;
+            edgeUsed[nxt] = 1;
+            px.push(pts[nxt]);
+            prev = cur;
+            cur = nxt;
+        }
+        loops.push(px);
+    }
+    if (!edges.length) {
+        loops.sort((a, b) => b.length - a.length);
+        return loops.length ? [].concat(...loops) : pts;
+    }
+    // 找不重複用邊的走法（DFS，有步數上限，超過就用目前找到最好的）：
+    // 能繞回起點的「一整圈」優先（外框、圓圈），一圈夠長就用它；否則用總長最長的走法
+    const adj = nodes.map(() => []);
+    edges.forEach((e, k) => {
+        adj[e.a].push(k);
+        if (e.b !== e.a) adj[e.b].push(k);
+    });
+    adj.forEach(list => list.sort((p, q) => edges[q].px.length - edges[p].px.length));
+    const used = new Uint8Array(edges.length);
+    let best = {len: -1, start: 0, seq: []}, bestLoop = {len: -1, start: 0, seq: []}, budget = 60000;
+    const seq = [];
+    const dfs = (start, u, len) => {
+        if (len > best.len) best = {len, start, seq: seq.slice()};
+        if (seq.length && u === start && len > bestLoop.len) bestLoop = {len, start, seq: seq.slice()};
+        for (const k of adj[u]) {
+            if (used[k] || budget <= 0) continue;
+            budget--;
+            const e = edges[k];
+            used[k] = 1;
+            seq.push(k);
+            dfs(start, e.a === u ? e.b : e.a, len + e.px.length + 1);
+            seq.pop();
+            used[k] = 0;
+        }
+    };
+    // 先從端點（只接一條邊的節點）開始找，再試分岔點
+    const starts = nodes.map((m, id) => id).sort((p, q) => adj[p].length - adj[q].length);
+    for (const s of starts) {
+        if (budget <= 0) break;
+        dfs(s, s, 0);
+    }
+    if (bestLoop.len >= best.len * 0.5) best = bestLoop;
+    // 主路徑經過的節點
+    const onPath = new Uint8Array(nodes.length);
+    let u = best.start;
+    onPath[u] = 1;
+    best.seq.forEach(k => {
+        const e = edges[k];
+        u = e.a === u ? e.b : e.a;
+        onPath[u] = 1;
+    });
+    // 沒走到的邊：掛在已經接得到的節點上，當作「出去再回來」的分岔
+    const inSeq = new Uint8Array(edges.length);
+    best.seq.forEach(k => { inSeq[k] = 1; });
+    const reached = onPath.slice();
+    const detours = nodes.map(() => []);
+    let left = edges.map((e, k) => k).filter(k => !inSeq[k]);
+    let progress = true;
+    while (left.length && progress) {
+        progress = false;
+        left = left.filter(k => {
+            const e = edges[k];
+            if (reached[e.a]) {
+                detours[e.a].push({px: e.px, far: e.b});
+                reached[e.b] = 1;
+                progress = true;
+                return false;
+            }
+            if (reached[e.b]) {
+                detours[e.b].push({px: e.px.slice().reverse(), far: e.a});
+                reached[e.a] = 1;
+                progress = true;
+                return false;
+            }
+            return true;
+        });
+    }
+    const out = [];
+    const done = new Uint8Array(nodes.length);
+    const emitDetours = (id) => {
+        if (done[id]) return;
+        done[id] = 1;
+        for (const d of detours[id]) {
+            out.push(...d.px);
+            if (!onPath[d.far] && !done[d.far]) {
+                out.push(rep(d.far));
+                emitDetours(d.far);
+            }
+        }
+    };
+    u = best.start;
+    out.push(rep(u));
+    emitDetours(u);
+    best.seq.forEach((k, i) => {
+        const e = edges[k];
+        out.push(...(e.a === u ? e.px : e.px.slice().reverse()));
+        u = e.a === u ? e.b : e.a;
+        const closing = i === best.seq.length - 1 && u === best.start;
+        if (!closing) {
+            out.push(rep(u));
+            emitDetours(u);
+        }
+    });
+    // 跟主路徑完全接不上的零碎片段（骨架斷開時）放在最後
+    left.forEach(k => { out.push(...edges[k].px); });
+    loops.forEach(px => { out.push(...px); });
+    return out;
 }
 
 // 細化模式（只取中心線）下，改用「沿骨架路徑走訪＋依距離等間隔抽樣」取點；
@@ -2715,7 +2870,7 @@ function redraw() {
         // 標點大小與顏色在「顯示圖片」開或關時都一樣套用；作用中的圖層不透明、其他圖層淡一點
         const dotR = fillMode ? Math.max(1.5, Math.min(diameter / 2 * k, 3)) : Math.max(2, diameter / 2 * k);
         if (!fillMode && L.kind !== 'fill') {   // 背景填充的點不連線、不檢查斷開
-            if (imageView) pathOf(P, L.close, isActive ? '#ff3b30' : L.color, isActive ? 2 : 1.4);
+            if (imageView && showPath) pathOf(P, L.close, isActive ? '#ff3b30' : L.color, isActive ? 2 : 1.4);
             else if (showLines) pathOf(P, L.close, 'rgba(255,107,107,0.9)', 1.5);
             if (showLines) gapsOf(P, L.close);
         }
@@ -4498,9 +4653,8 @@ $id('runDetectBtn').addEventListener('click', () => {
         }
         const use = comps.slice(0, MAX_AUTO_LAYERS);
         const useCenterline = $id('centerlineToggle').checked;
-        const samplers = [], weights = [], rings = [];
+        const samplers = [], weights = [];
         use.forEach(c => {
-            rings.push(useCenterline && componentEnclosesHole(c.mask, W, H));
             if (useCenterline) {
                 const ordered = orderSkeletonPath(pruneSkeletonSpurs(thinMask(c.mask, W, H), W, H, 8), W, H);
                 samplers.push((sp) => resampleBySpacing(ordered, sp));
@@ -4513,9 +4667,9 @@ $id('runDetectBtn').addEventListener('click', () => {
         const counts = N ? allocateCounts(weights, N) : null;
         const label = method === 'black' ? '黑線' : '邊緣';
         samplers.forEach((run, i) => {
-            // closeHint：'ring'＝線條圍出一個封閉區域；'grid'＝網格取樣的點沒有順序，不能閉合；'open'＝再看頭尾距離
-            results.push({name: `${label} ${i + 1}`, pts: N ? fitToCount(run, counts[i]) : run(spacing), close: rings[i],
-                closeHint: !useCenterline ? 'grid' : (rings[i] ? 'ring' : 'open')});
+            // closeHint：'grid'＝網格取樣的點沒有順序，不能閉合；'path'＝依排好的順序看頭尾距離
+            results.push({name: `${label} ${i + 1}`, pts: N ? fitToCount(run, counts[i]) : run(spacing), close: false,
+                closeHint: useCenterline ? 'path' : 'grid'});
         });
     }
     results = results.filter(r => r.pts && r.pts.length);
@@ -4531,23 +4685,18 @@ $id('runDetectBtn').addEventListener('click', () => {
     }
     else if (layers.length === 1 && !layers[0].points.length) { layers = []; }
     const first = layers.length;
-    // 中心線描出來的路徑：線條本身圍成一圈（遮罩裡有被包住的洞）就閉合；沒有圍住的線，
-    // 只有頭尾缺口很小（不超過約 3 個點距，且不到全長 8%）時才補成閉合，避免 C 字、弧線被多連一條線
+    // 中心線描出來的路徑（已依骨架排好順序）：最後一點回到第一點的距離，跟一般點距差不多才算閉合。
+    // 用點距的中位數當基準，路徑中間「從分岔跳回主線」的那幾段不會把基準拉大。
     results.forEach(r => {
         const P = r.pts, m = P.length;
         if (r.closeHint === 'grid') { r.close = false; return; }
-        if (r.close || r.closeHint !== 'open' || m < 4) return;
-        let len = 0;
+        if (r.closeHint !== 'path' || m < 4) return;
         const steps = [];
-        for (let i = 0; i < m - 1; i++) {
-            const d = Math.hypot(P[i].x - P[i + 1].x, P[i].y - P[i + 1].y);
-            steps.push(d);
-            len += d;
-        }
+        for (let i = 0; i < m - 1; i++) steps.push(Math.hypot(P[i].x - P[i + 1].x, P[i].y - P[i + 1].y));
         steps.sort((x, y) => x - y);
         const med = steps[Math.floor(steps.length / 2)] || 0;
         const gap = Math.hypot(P[0].x - P[m - 1].x, P[0].y - P[m - 1].y);
-        if (med > 0 && gap <= med * 3 && gap <= len * 0.08) r.close = true;
+        r.close = med > 0 && gap <= med * 1.8;
     });
     results.forEach(r => {
         layers.push(newLayer(r.name, r.pts.map(p => workToNatural(p.x, p.y)), r.close));
