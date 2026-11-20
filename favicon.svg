@@ -1,0 +1,60 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64">
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#182334"/>
+      <stop offset="1" stop-color="#080b11"/>
+    </linearGradient>
+    <radialGradient id="vig" cx="0.5" cy="0.5" r="0.6">
+      <stop offset="0" stop-color="#2f6bff" stop-opacity="0.22"/>
+      <stop offset="0.55" stop-color="#2f6bff" stop-opacity="0.05"/>
+      <stop offset="1" stop-color="#000000" stop-opacity="0.35"/>
+    </radialGradient>
+    <clipPath id="clip"><rect width="64" height="64" rx="16"/></clipPath>
+  </defs>
+
+  <rect width="64" height="64" rx="16" fill="url(#bg)"/>
+
+  <g clip-path="url(#clip)">
+    <!-- 細網格 -->
+    <g stroke="#9cc2ff" stroke-opacity="0.07" stroke-width="0.8">
+      <path d="M8 0v64M20 0v64M44 0v64M56 0v64M0 8h64M0 20h64M0 44h64M0 56h64"/>
+    </g>
+    <g stroke="#9cc2ff" stroke-opacity="0.13" stroke-width="0.8">
+      <path d="M32 0v64M0 32h64"/>
+    </g>
+    <!-- 淡等高線 -->
+    <g fill="none" stroke="#6ea8ff" stroke-opacity="0.16" stroke-width="0.9">
+      <path d="M-4 52c10-8 18-2 26-10s12-14 24-12 10 6 22 2"/>
+      <path d="M-4 58c12-7 20 0 28-8s14-12 26-10 8 6 18 2"/>
+      <path d="M38-2c-4 8 0 12 8 14s14-2 22-8"/>
+    </g>
+    <!-- 暈光 / 暗角 -->
+    <rect width="64" height="64" fill="url(#vig)"/>
+    <!-- 遠處路標點 -->
+    <g fill="#9cc2ff">
+      <circle cx="12" cy="12" r="1.1" fill-opacity="0.55"/>
+      <circle cx="53" cy="51" r="1.1" fill-opacity="0.55"/>
+      <circle cx="50" cy="14" r="0.8" fill-opacity="0.4"/>
+      <circle cx="13" cy="50" r="0.8" fill-opacity="0.4"/>
+    </g>
+  </g>
+
+  <!-- 主視覺：細長四芒星，八面分光 -->
+  <g stroke-linejoin="round">
+    <!-- 上 -->
+    <path d="M32 4L27.6 27.6L32 32Z" fill="#3b7bff"/>
+    <path d="M32 4L36.4 27.6L32 32Z" fill="#1d4bb5"/>
+    <!-- 右 -->
+    <path d="M60 32L36.4 27.6L32 32Z" fill="#2d63d9"/>
+    <path d="M60 32L36.4 36.4L32 32Z" fill="#163d96"/>
+    <!-- 下 -->
+    <path d="M32 60L36.4 36.4L32 32Z" fill="#163d96"/>
+    <path d="M32 60L27.6 36.4L32 32Z" fill="#2d63d9"/>
+    <!-- 左 -->
+    <path d="M4 32L27.6 36.4L32 32Z" fill="#1d4bb5"/>
+    <path d="M4 32L27.6 27.6L32 32Z" fill="#5a93ff"/>
+    <!-- 高光邊 -->
+    <path d="M32 4L36.4 27.6L60 32L36.4 36.4L32 60L27.6 36.4L4 32L27.6 27.6Z" fill="none" stroke="#bcd6ff" stroke-width="0.8" stroke-opacity="0.7"/>
+    <path d="M32 4L27.6 27.6L4 32" fill="none" stroke="#e3efff" stroke-width="0.9" stroke-opacity="0.9"/>
+  </g>
+</svg>
