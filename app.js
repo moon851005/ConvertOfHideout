@@ -104,6 +104,7 @@ const BG_SETTINGS_KEY_OLD = 'traceToolBgSettings';
 const SESSION_KEY = 'traceToolSessionV7';
 const LAYERS_COLLAPSED_KEY = 'traceToolLayersCollapsed';
 const OBJ_KEY = 'traceToolObjectsV1';
+const SETTINGS_TAB_KEY = 'traceToolSettingsTab';
 
 // 像素遮罩用的 4-鄰／8-鄰偏移（固定常數，不要在每個像素迴圈裡重新建陣列）
 const N4 = [[1, 0], [-1, 0], [0, 1], [0, -1]];
@@ -1160,6 +1161,24 @@ $id('setOriginNumBtn').addEventListener('click', () => {
     centerOffset = [nx, ny];
     commitPoints(`原點的座標值已設為 (${nx}, ${ny})，所有匯出座標都以它為基準。`);
 });
+// 有設定藏身處邊界時，才顯示「設置在藏身處中心點」
+function hideoutCenter() {
+    const b = hideoutBounds();
+    return b ? [Math.round((b.minX + b.maxX) / 2), Math.round((b.minY + b.maxY) / 2)] : null;
+}
+function syncOriginHideoutRow() {
+    const c = hideoutCenter();
+    $id('originHideoutRow').hidden = !c;
+    if (c) $id('originHideoutInfo').textContent = `藏身處中心：${c[0]}, ${c[1]}`;
+}
+$id('originHideoutCenterBtn').addEventListener('click', () => {
+    const c = hideoutCenter();
+    if (!c) return;
+    $id('originXInput').value = c[0];
+    $id('originYInput').value = c[1];
+    centerOffset = [c[0], c[1]];
+    commitPoints(`原點的座標值已設為藏身處中心點 (${c[0]}, ${c[1]})。`);
+});
 $id('boundaryModeBtn').addEventListener('click', () => {
     setMode('boundary');
     $id('boundaryStatus').textContent = boundaryPoints.length
@@ -1286,7 +1305,9 @@ function updateOutputs() {
         return;
     }
     const rel = getRelPoints();
-    $id('totalCountSummary').textContent = `目前共 ${rel.length} 個匯出座標` + (lastDupRemoved ? `（描點 ${points.length} 個，已去除 ${lastDupRemoved} 個重複座標）` : '');
+    const outside = countOutsideHideout(rel);
+    $id('totalCountSummary').textContent = `目前共 ${rel.length} 個匯出座標` + (lastDupRemoved ? `（描點 ${points.length} 個，已去除 ${lastDupRemoved} 個重複座標）` : '') +
+        (outside > 0 ? `，其中 ${outside} 個超出藏身處邊界` : '');
 
     coordsList.innerHTML = rel.map((p, i) => `<div>${i + 1}. x=${p[0]}, y=${p[1]}</div>`).join('');
 
@@ -1574,11 +1595,20 @@ $id('parseReplaceBtn').addEventListener('click', () => {
 });
 
 function getRelPointsRaw() {
+    return getRelPointsTaggedRaw().map(o => o.p);
+}
+// 每個匯出點附帶所屬圖層的類型（line＝線稿、fill＝背景填充），匯出 .hideout 時依此選物件
+function getRelPointsTaggedRaw() {
     const t = exportTransform();
-    return exportPoints().map(p => {
-        const r = toRelPoint(p, t);
-        return [Math.round(r[0]), Math.round(r[1])];
-    });
+    const out = [];
+    for (const L of visibleLayers()) {
+        const kind = L.kind === 'fill' ? 'fill' : 'line';
+        for (const p of L.points) {
+            const r = toRelPoint(p, t);
+            out.push({p: [Math.round(r[0]), Math.round(r[1])], kind});
+        }
+    }
+    return out;
 }
 
 function parseTemplate(text) {
@@ -1615,18 +1645,22 @@ function generateBatch() {
         statusEl.textContent = '還沒有可用的物件，請按「管理物件」新增一組。';
         return;
     }
-    const rel = getRelPoints();
+    const rel = getRelPointsTagged();
     if (!rel.length) {
         statusEl.textContent = '匯出座標是空的，請先描邊、選取或偵測。';
         return;
     }
-    const lines = rel.map(p => {
-        return `    "${tpl.name}": {\n      "hash": ${tpl.hash},\n      "x": ${p[0]},\n      "y": ${p[1]},\n      "r": ${tpl.r},\n      "fv": ${tpl.fv}\n    },`;
+    const bgTpl = currentBgObjectTemplate();
+    const fillN = rel.filter(o => o.kind === 'fill').length;
+    const lines = rel.map(o => {
+        const t = (o.kind === 'fill' && bgTpl) ? bgTpl : tpl;
+        return `    "${t.name}": {\n      "hash": ${t.hash},\n      "x": ${o.p[0]},\n      "y": ${o.p[1]},\n      "r": ${t.r},\n      "fv": ${t.fv}\n    },`;
     });
     exportEl.value = lines.join('\n');
     const skipped = visibleLayers().filter(L => !L.points.length).length;
-    statusEl.textContent = `已用物件「${tpl.name}」產生 ${rel.length} 組設定（hash=${tpl.hash}，r=${tpl.r}，fv=${tpl.fv}，只改 x, y）` +
-        (skipped ? `，已略過 ${skipped} 個沒有座標的圖層。` : '。');
+    let msg = `已產生 ${rel.length} 組設定（只改 x, y）：線稿用物件「${tpl.name}」${rel.length - fillN} 組`;
+    if (fillN) msg += bgTpl ? `，背景物件「${bgTpl.name}」${fillN} 組` : `，背景 ${fillN} 組（尚未設定背景物件，暫用線稿用物件）`;
+    statusEl.textContent = msg + (skipped ? `，已略過 ${skipped} 個沒有座標的圖層。` : '。');
 }
 $id('batchCopyBtn').addEventListener('click', async () => {
     const exportEl = $id('batchExportBox');
@@ -1882,7 +1916,7 @@ function renderPointsPreview(canvasEl, ctxEl, wrapEl, emptyEl) {
     if (!fillMode && showLines) {
         for (const L of visibleLayers()) {
             const P = L.points, m = P.length;
-            if (m < 2) continue;
+            if (m < 2 || L.kind === 'fill') continue;   // 背景填充的點不連線
             ctxEl.strokeStyle = 'rgba(255,107,107,0.9)';
             ctxEl.lineWidth = 1.5;
             ctxEl.setLineDash([]);
@@ -1930,6 +1964,8 @@ function updateHeroStats() {
     const maxCount = getMaxCount();
     const exportN = n ? getRelPoints().length : 0;
     const items = [{k: '匯出座標數' + (maxCount ? `（上限 ${maxCount}）` : ''), v: String(exportN) + (lastDupRemoved ? `（去重 −${lastDupRemoved}）` : ''), cls: (maxCount && exportN > maxCount) ? 'warn' : ''}];
+    const outsideN = exportN ? countOutsideHideout(getRelPoints()) : -1;
+    if (outsideN >= 0) items.push({k: '超出藏身處邊界', v: `${outsideN} 個`, cls: outsideN > 0 ? 'warn' : 'ok'});
 
     if ($id('fillModeToggle').checked) {
         items.push({k: '平均間距', v: '實心填滿'});
@@ -1994,6 +2030,23 @@ document.querySelectorAll('.view-tab').forEach(t => {
     t.addEventListener('click', () => showView(t.dataset.view));
 });
 
+// ---- 設定頁分頁 ----
+function showSettingsTab(name) {
+    const tabs = [...document.querySelectorAll('#settingsTabs [data-tab]')];
+    if (!tabs.some(t => t.dataset.tab === name)) name = tabs[0].dataset.tab;
+    tabs.forEach(t => {
+        const on = t.dataset.tab === name;
+        t.classList.toggle('active', on);
+        t.setAttribute('aria-selected', on ? 'true' : 'false');
+    });
+    document.querySelectorAll('#view-settings .set-card[data-tab]').forEach(c => { c.hidden = c.dataset.tab !== name; });
+    storage.set(SETTINGS_TAB_KEY, name);
+}
+document.querySelectorAll('#settingsTabs [data-tab]').forEach(t => {
+    t.addEventListener('click', () => showSettingsTab(t.dataset.tab));
+});
+showSettingsTab(storage.get(SETTINGS_TAB_KEY) || 'output');
+
 // ---- 彈出視窗（可拖曳，不會擋住操作畫布） ----
 function markToolButtons() {
     document.querySelectorAll('[data-win]').forEach(b => {
@@ -2020,6 +2073,7 @@ function openWin(id) {
     if (id === 'win-origin') {
         $id('originXInput').value = centerOffset[0];
         $id('originYInput').value = centerOffset[1];
+        syncOriginHideoutRow();
     }
     if (id === 'win-detect') {
         $id('detectStatus').textContent = '';
@@ -2027,11 +2081,13 @@ function openWin(id) {
         suggestDetectMethod();
     }
     if (id === 'win-export-hideout') generateBatch();
+    if (id === 'win-fill') renderFillSources();
 }
 // 跳到設定頁的「線稿用物件」區塊
 function goToObjectSettings(msg) {
     closeWin();
     showView('settings');
+    showSettingsTab('objects');
     $id('objectCard').scrollIntoView({block: 'start'});
     if (msg) {
         $id('objectStatus').textContent = msg;
@@ -2193,12 +2249,28 @@ bindFormatPair('formatJson', 'formatSvg');
 // ---- 設定：即時生效＋自動儲存 ----
 const persistIds = ['snapRadiusSlider', 'offsetStepInput', 'dedupeToggle', 'maxCountInput', 'flipY', 'autoRotateInput', 'targetCountInput', 'minSizeSlider', 'centerlineToggle',
     'fillModeToggle', 'toleranceSlider', 'spacingSlider', 'showExtentsToggle',
-    'blackThresholdSlider', 'edgeThresholdSlider'];
+    'blackThresholdSlider', 'edgeThresholdSlider', 'alphaThreshold', 'alphaHoles', 'detectSens', 'detectReplace',
+    'fillCountInput', 'fillMarginInput', 'fillHolesToggle', 'fillReplaceToggle',
+    'showHideoutBoundsToggle', 'hideoutXMin', 'hideoutXMax', 'hideoutYMin', 'hideoutYMax'];
+// 單選按鈕群組（依 name 存取）
+const persistRadios = ['detectMethod', 'detectType', 'fillLayout'];
+// 使用者自己選的偵測方式；圖片沒有透明區時畫面會暫時退回「黑色線條」，但存檔仍保留這個偏好
+let preferredDetectMethod = null;
+function radioValue(name) {
+    const r = document.querySelector(`input[name="${name}"]:checked`);
+    return r ? r.value : null;
+}
+function setRadio(name, value) {
+    const r = document.querySelector(`input[name="${name}"][value="${value}"]`);
+    if (r) r.checked = true;
+    return !!r;
+}
 function syncSliderLabels() {
     persistIds.forEach(id => {
-        if (!id.endsWith('Slider')) return;
-        const span = $id(id.replace('Slider', 'Val'));
-        if (span) span.textContent = $id(id).value;
+        const el = $id(id);
+        if (!el || el.type !== 'range') return;
+        const span = $id(id.endsWith('Slider') ? id.replace('Slider', 'Val') : id + 'Val');
+        if (span) span.textContent = el.value;
     });
 }
 function saveSettings() {
@@ -2207,6 +2279,8 @@ function saveSettings() {
         const el = $id(id);
         data[id] = el.type === 'checkbox' ? el.checked : el.value;
     });
+    persistRadios.forEach(name => { data[name] = radioValue(name); });
+    if (preferredDetectMethod) data.detectMethod = preferredDetectMethod;
     storage.set(SETTINGS_KEY, data);
 }
 (function loadSettings() {
@@ -2217,11 +2291,19 @@ function saveSettings() {
         if (!el || !(id in data)) return;
         if (el.type === 'checkbox') el.checked = !!data[id]; else el.value = data[id];
     });
+    persistRadios.forEach(name => { if (data[name]) setRadio(name, data[name]); });
+    if (data.detectMethod) preferredDetectMethod = data.detectMethod;
     syncSliderLabels();
 })();
 persistIds.forEach(id => {
     const el = $id(id);
     if (el) el.addEventListener('change', saveSettings);
+});
+persistRadios.forEach(name => {
+    document.querySelectorAll(`input[name="${name}"]`).forEach(r => r.addEventListener('change', () => {
+        if (name === 'detectMethod') preferredDetectMethod = r.value;
+        saveSettings();
+    }));
 });
 $id('autoRotateInput').addEventListener('input', () => { updateOutputs(); });
 $id('fillModeToggle').addEventListener('change', () => { commitPoints(); });
@@ -2230,7 +2312,13 @@ $id('resetSettingsBtn').addEventListener('click', () => {
         const el = $id(id);
         if (el.type === 'checkbox') el.checked = el.defaultChecked; else el.value = el.defaultValue;
     });
+    persistRadios.forEach(name => {
+        document.querySelectorAll(`input[name="${name}"]`).forEach(r => { r.checked = r.defaultChecked; });
+    });
+    preferredDetectMethod = null;
     syncSliderLabels();
+    syncDetectFields();
+    $id('targetCountInput').dispatchEvent(new Event('input'));
     storage.remove(SETTINGS_KEY);
     commitPoints();
     $id('settingsStatus').textContent = '已恢復預設值。';
@@ -2574,12 +2662,12 @@ function redraw() {
         diameter = validSize(L.size);   // 每個圖層用自己的標點大小與顏色
         // 標點大小與顏色在「顯示圖片」開或關時都一樣套用；作用中的圖層不透明、其他圖層淡一點
         const dotR = fillMode ? Math.max(1.5, Math.min(diameter / 2 * k, 3)) : Math.max(2, diameter / 2 * k);
-        if (!fillMode) {
+        if (!fillMode && L.kind !== 'fill') {   // 背景填充的點不連線、不檢查斷開
             if (imageView) pathOf(P, L.close, isActive ? '#ff3b30' : L.color, isActive ? 2 : 1.4);
             else if (showLines) pathOf(P, L.close, 'rgba(255,107,107,0.9)', 1.5);
             if (showLines) gapsOf(P, L.close);
         }
-        dotsOf(P, dotR, dotFill(L.color, isActive || vis.length === 1 ? 1.2 : 0.6), (imageView && isActive && !fillMode) ? '#34c759' : null);
+        dotsOf(P, dotR, dotFill(L.color, isActive || vis.length === 1 ? 1.2 : 0.6), (imageView && isActive && !fillMode && L.kind !== 'fill') ? '#34c759' : null);
         if (isActive) ringR = dotR + 5;
     }
     if (!mergedOp && layers[activeLayer] && layers[activeLayer].visible && selectedPointIndex >= 0 && selectedPointIndex < points.length) {
@@ -2594,6 +2682,7 @@ function redraw() {
     }
 
     drawExtents();
+    drawHideoutBounds();
 
     // 原點十字
     const [ox, oy] = toDisplay(origin.x, origin.y);
@@ -2741,6 +2830,64 @@ function drawExtents() {
     ctx.restore();
 }
 $id('showExtentsToggle').addEventListener('change', () => { redraw(); });
+
+// ---- 藏身處絕對邊界（設定頁輸入的固定匯出座標範圍） ----
+function hideoutBounds() {
+    const v = id => {
+        const s = String($id(id).value).trim();
+        return s === '' ? NaN : Number(s);
+    };
+    const b = {minX: v('hideoutXMin'), maxX: v('hideoutXMax'), minY: v('hideoutYMin'), maxY: v('hideoutYMax')};
+    return [b.minX, b.maxX, b.minY, b.maxY].every(isFinite) && b.minX < b.maxX && b.minY < b.maxY ? b : null;
+}
+// 超出藏身處邊界的匯出點數；沒設定邊界時回傳 -1
+function countOutsideHideout(rel) {
+    const b = hideoutBounds();
+    if (!b) return -1;
+    return rel.filter(p => p[0] < b.minX || p[0] > b.maxX || p[1] < b.minY || p[1] > b.maxY).length;
+}
+function drawHideoutBounds() {
+    if (!$id('showHideoutBoundsToggle').checked || !world) return;
+    const b = hideoutBounds();
+    if (!b) return;
+    const t = exportTransform();
+    const toScreen = (rx, ry) => {
+        const n = relToNatural(rx, ry, t);
+        return toDisplay(n[0], n[1]);
+    };
+    const c00 = toScreen(b.minX, b.minY), c10 = toScreen(b.maxX, b.minY), c11 = toScreen(b.maxX, b.maxY), c01 = toScreen(b.minX, b.maxY);
+    const cc = toScreen((b.minX + b.maxX) / 2, (b.minY + b.maxY) / 2);
+    const color = '#ff6b9a';
+    ctx.save();
+    const frame = () => {
+        ctx.beginPath();
+        ctx.moveTo(c00[0], c00[1]); ctx.lineTo(c10[0], c10[1]); ctx.lineTo(c11[0], c11[1]); ctx.lineTo(c01[0], c01[1]);
+        ctx.closePath();
+        ctx.stroke();
+    };
+    ctx.setLineDash([]);
+    ctx.strokeStyle = 'rgba(10,12,18,0.55)';
+    ctx.lineWidth = 3.5;
+    frame();
+    ctx.strokeStyle = color;
+    ctx.lineWidth = 1.6;
+    frame();
+    ctx.font = '12px ui-monospace, Menlo, Consolas, monospace';
+    ctx.textBaseline = 'middle';
+    const edge = (a, c, text) => {
+        const mx = (a[0] + c[0]) / 2, my = (a[1] + c[1]) / 2;
+        const dx = mx - cc[0], dy = my - cc[1], len = Math.hypot(dx, dy) || 1;
+        drawTag(text, mx + dx / len * 18, my + dy / len * 18, color);
+    };
+    edge(c00, c01, `藏身處 X ${b.minX}`);
+    edge(c10, c11, `藏身處 X ${b.maxX}`);
+    edge(c00, c10, `藏身處 Y ${b.minY}`);
+    edge(c01, c11, `藏身處 Y ${b.maxY}`);
+    ctx.restore();
+}
+['showHideoutBoundsToggle', 'hideoutXMin', 'hideoutXMax', 'hideoutYMin', 'hideoutYMax'].forEach(id => {
+    $id(id).addEventListener('input', () => { redraw(); updateOutputs(); syncOriginHideoutRow(); });
+});
 
 // ---- 偏移：按畫面上的上下左右，把圖片（連同描好的點）相對原點移動 ----
 // 原點固定在畫面中央不動；匯出座標只會加減整數。畫面方向換算成匯出座標時取最接近的八個方向之一，
@@ -3124,18 +3271,22 @@ function boundaryNat() {
 
 // ---- 匯出時去除重複座標 ----
 function getRelPoints() {
-    const raw = getRelPointsRaw();
+    return getRelPointsTagged().map(o => o.p);
+}
+// 去除重複座標：只在同一類型（線稿／背景）之間去重
+function getRelPointsTagged() {
+    const raw = getRelPointsTaggedRaw();
     lastDupRemoved = 0;
     if (!$id('dedupeToggle').checked) return raw;
     const seen = new Set(), out = [];
-    for (const p of raw) {
-        const key = p[0] + ',' + p[1];
+    for (const o of raw) {
+        const key = o.kind + ':' + o.p[0] + ',' + o.p[1];
         if (seen.has(key)) {
             lastDupRemoved++;
             continue;
         }
         seen.add(key);
-        out.push(p);
+        out.push(o);
     }
     return out;
 }
@@ -3199,8 +3350,10 @@ function updateDensityInfo() {
     const n = exportPoints().length ? getRelPoints().length : 0;
     const max = getMaxCount();
     const over = max && n > max;
+    const outside = n ? countOutsideHideout(getRelPoints()) : -1;
     el.innerHTML = `目前匯出 <b style="color:${over ? 'var(--warn)' : 'var(--text)'}">${n}</b> 個座標` +
-        (max ? `，上限 ${max}${over ? `（超過 ${n - max} 個）` : '（在上限內）'}。` : '。');
+        (max ? `，上限 ${max}${over ? `（超過 ${n - max} 個）` : '（在上限內）'}。` : '。') +
+        (outside > 0 ? ` <span style="color:var(--warn)">有 ${outside} 個點超出藏身處邊界。</span>` : '');
 }
 $id('thinApplyBtn').addEventListener('click', () => {
     const st = $id('densityStatus');
@@ -3391,7 +3544,7 @@ document.addEventListener('click', (e) => {
 function buildSessionData(withImage) {
     return {
         v: 9,
-        layers: (syncActiveLayer(), layers.map(L => ({name: L.name, visible: L.visible, close: L.close, color: L.color, size: L.size, points: L.points}))),
+        layers: (syncActiveLayer(), layers.map(L => ({name: L.name, visible: L.visible, close: L.close, color: L.color, size: L.size, kind: L.kind, fillSrc: L.fillSrc, points: L.points}))),
         active: activeLayer,
         origin: {x: origin.x, y: origin.y},
         originValue: [centerOffset[0], centerOffset[1]],
@@ -3533,7 +3686,7 @@ function exportPoints() {
 }
 function newLayer(name, pts, close, used) {
     layerSeq++;
-    return {id: layerSeq, name: name || `圖層 ${layerSeq}`, visible: true, close: close === undefined ? true : !!close, points: pts || [], color: pickLayerColor(used || layers), size: DEFAULT_DOT_SIZE};
+    return {id: layerSeq, name: name || `圖層 ${layerSeq}`, visible: true, close: close === undefined ? true : !!close, points: pts || [], color: pickLayerColor(used || layers), size: DEFAULT_DOT_SIZE, kind: 'line', fillSrc: ''};
 }
 function resetLayers(name) {
     layerSeq = 0;
@@ -3603,7 +3756,15 @@ function renderLayers() {
         row.addEventListener('click', (e) => {
             if (e.target !== name || i !== activeLayer) setActiveLayer(i);
         });
-        row.appendChild(eye); row.appendChild(dot); row.appendChild(name); row.appendChild(cnt); row.appendChild(del);
+        row.appendChild(eye); row.appendChild(dot); row.appendChild(name);
+        if (L.kind === 'fill') {
+            const tag = document.createElement('span');
+            tag.className = 'kind-tag';
+            tag.textContent = '背景';
+            tag.title = '背景填充產生的圖層，匯出時使用背景物件';
+            row.appendChild(tag);
+        }
+        row.appendChild(cnt); row.appendChild(del);
         list.appendChild(row);
     });
     $id('layerSummary').textContent = `${layers.length} 個圖層`;
@@ -3679,6 +3840,7 @@ $id('mergeLayersBtn').addEventListener('click', () => {
     vis.forEach(L => { all = all.concat(L.points); });
     const merged = newLayer('合併圖層', all, false, layers.filter(L => !L.visible));
     merged.color = vis[0].color; merged.size = vis[0].size;
+    if (vis.every(L => L.kind === 'fill')) merged.kind = 'fill';
     layers = layers.filter(L => !L.visible).concat([merged]);
     activeLayer = layers.length - 1;
     points = merged.points;
@@ -3717,6 +3879,7 @@ function layerGapStats() {
     let gaps = 0;
     const sizes = new Set();
     for (const L of visibleLayers()) {
+        if (L.kind === 'fill') continue;   // 背景填充的點本來就不相連
         const P = L.points, m = P.length, dia = validSize(L.size);
         if (m) sizes.add(dia);
         const add = d => {
@@ -3765,7 +3928,7 @@ document.addEventListener('click', () => {
 function snapshotState() {
     syncActiveLayer();
     return JSON.stringify({
-        layers: layers.map(L => ({name: L.name, visible: L.visible, close: L.close, color: L.color, size: L.size, points: L.points})),
+        layers: layers.map(L => ({name: L.name, visible: L.visible, close: L.close, color: L.color, size: L.size, kind: L.kind, fillSrc: L.fillSrc, points: L.points})),
         origin: origin, originValue: centerOffset, boundary: boundaryPoints, boundarySpace: boundarySpace
     });
 }
@@ -3799,6 +3962,8 @@ function loadLayersFrom(list, active) {
         nl.visible = L.visible !== false;
         if (validColor(L.color)) nl.color = validColor(L.color);
         nl.size = validSize(L.size);
+        nl.kind = L.kind === 'fill' ? 'fill' : 'line';
+        nl.fillSrc = typeof L.fillSrc === 'string' ? L.fillSrc : '';
         out.push(nl);
     });
     layers = out;
@@ -4112,10 +4277,11 @@ function suggestDetectMethod() {
     const info = transparencyInfo();
     const has = info.ratio > 0.01;
     $id('alphaInfo').textContent = has
-        ? `這張圖有透明背景（約 ${(info.ratio * 100).toFixed(0)}% 是透明的），已預設使用「透明邊」。`
+        ? `這張圖有透明背景（約 ${(info.ratio * 100).toFixed(0)}% 是透明的），可使用「透明邊」。`
         : '這張圖沒有透明區域，「透明邊」無法使用（去背的 PNG 才有）。';
-    const pick = document.querySelector(`input[name="detectMethod"][value="${has ? 'alpha' : 'black'}"]`);
-    if (has || detectMethod() === 'alpha') pick.checked = true;
+    // 沿用上次選的方式；只有上次是透明邊、這張圖卻沒有透明區時，暫時改用黑色線條（不寫回設定）
+    const want = preferredDetectMethod || detectMethod();
+    setRadio('detectMethod', (want === 'alpha' && !has) ? 'black' : want);
     syncDetectFields();
 }
 // 把遮罩裡「被主體包住的洞」找出來（從邊界灌不到的透明區域）
@@ -4480,11 +4646,208 @@ document.addEventListener('click', () => {
     });
 });
 
+// ---- 背景填充：在封閉圖層內依面積平均放點，產生「背景」圖層 ----
+// 多邊形面積（鞋帶公式，取絕對值）
+function polygonArea(poly) {
+    let a = 0;
+    for (let i = 0, j = poly.length - 1; i < poly.length; j = i++) a += (poly[j][0] + poly[i][0]) * (poly[j][1] - poly[i][1]);
+    return Math.abs(a) / 2;
+}
+// 點到多組線段（每一組是一個封閉環）的最短距離
+function distToRings(px, py, rings) {
+    let best = Infinity;
+    for (const ring of rings) {
+        for (let i = 0, j = ring.length - 1; i < ring.length; j = i++) {
+            const ax = ring[j][0], ay = ring[j][1], bx = ring[i][0], by = ring[i][1];
+            const dx = bx - ax, dy = by - ay, len2 = dx * dx + dy * dy;
+            let t = len2 ? ((px - ax) * dx + (py - ay) * dy) / len2 : 0;
+            t = t < 0 ? 0 : t > 1 ? 1 : t;
+            const ex = ax + t * dx - px, ey = ay + t * dy - py;
+            const d = ex * ex + ey * ey;
+            if (d < best) best = d;
+        }
+    }
+    return Math.sqrt(best);
+}
+// 依間距在「外框扣掉洞」的區域內排格點（六角交錯或方格）。用掃描線求每一列落在區域內的區間（奇偶規則），
+// 不用每個格點都做 point-in-polygon。
+function sampleRegion(poly, holes, spacing, layout, margin) {
+    const rings = [poly].concat(holes);
+    let minX = Infinity, maxX = -Infinity, minY = Infinity, maxY = -Infinity;
+    for (const p of poly) {
+        if (p[0] < minX) minX = p[0];
+        if (p[0] > maxX) maxX = p[0];
+        if (p[1] < minY) minY = p[1];
+        if (p[1] > maxY) maxY = p[1];
+    }
+    const hex = layout !== 'grid';
+    const rowH = hex ? spacing * Math.sqrt(3) / 2 : spacing;
+    const rows = Math.floor((maxY - minY) / rowH);
+    const y0 = minY + ((maxY - minY) - rows * rowH) / 2;
+    const out = [];
+    for (let r = 0; r <= rows; r++) {
+        const y = y0 + r * rowH;
+        const xs = [];
+        for (const ring of rings) {
+            for (let i = 0, j = ring.length - 1; i < ring.length; j = i++) {
+                const yi = ring[i][1], yj = ring[j][1];
+                if ((yi > y) !== (yj > y)) xs.push(ring[i][0] + (y - yi) * (ring[j][0] - ring[i][0]) / (yj - yi));
+            }
+        }
+        xs.sort((a, b) => a - b);
+        const shift = (hex && (r & 1)) ? spacing / 2 : 0;
+        for (let k = 0; k + 1 < xs.length; k += 2) {
+            const a = xs[k], b = xs[k + 1];
+            // 對齊到整張圖共用的格線，相鄰區間的點才會整齊
+            let x = minX + shift + Math.ceil((a - minX - shift) / spacing) * spacing;
+            for (; x <= b; x += spacing) {
+                if (margin > 0 && distToRings(x, y, rings) < margin) continue;
+                out.push([x, y]);
+            }
+        }
+    }
+    return out;
+}
+// 找出讓點數最接近 n 的間距：從面積估一個起點，再二分搜尋；多出來的平均抽掉
+function fillRegionToCount(poly, holes, area, n, layout, margin) {
+    if (n <= 0 || area <= 0) return [];
+    const est = layout === 'grid' ? Math.sqrt(area / n) : Math.sqrt(2 * area / (Math.sqrt(3) * n));
+    const run = sp => sampleRegion(poly, holes, sp, layout, margin);
+    let lo = est / 2, hi = est * 2;
+    let rLo = run(lo);
+    for (let g = 0; rLo.length < n && lo > 0.05 && g < 6; g++) { lo /= 2; rLo = run(lo); }
+    const score = arr => Math.abs(arr.length - n) + (arr.length < n ? 0.5 : 0);
+    let best = rLo, rHi = run(hi);
+    if (score(rHi) < score(best)) best = rHi;
+    for (let i = 0; i < 24 && best.length !== n; i++) {
+        const mid = (lo + hi) / 2;
+        const r = run(mid);
+        if (score(r) < score(best)) best = r;
+        if (r.length > n) lo = mid; else hi = mid;
+    }
+    if (best.length > n) {
+        const keep = [];
+        for (let k = 0; k < n; k++) keep.push(best[Math.floor(k * best.length / n)]);
+        return keep;
+    }
+    return best;
+}
+function fillLayout() {
+    const r = document.querySelector('input[name="fillLayout"]:checked');
+    return r && r.value === 'grid' ? 'grid' : 'hex';
+}
+// 可以當填充來源的圖層：封閉、至少 3 個點、不是背景圖層
+function fillableLayers() {
+    syncActiveLayer();
+    return layers.filter(L => L.close && L.kind !== 'fill' && L.points.length >= 3);
+}
+// 某個來源圖層的洞：完全落在它裡面的其他封閉圖層，只取最外一層（洞裡的洞不算）
+function holesOf(A, candidates) {
+    const inside = candidates.filter(B => B !== A && polygonArea(B.points) < polygonArea(A.points) && allPointsInsidePolygon(B.points, A.points));
+    return inside.filter(B => !inside.some(C => C !== B && polygonArea(B.points) < polygonArea(C.points) && allPointsInsidePolygon(B.points, C.points)));
+}
+// 依目前勾選的來源圖層算出每一區的有效面積與分配到的點數
+function planFill() {
+    const all = fillableLayers();
+    const picked = [...document.querySelectorAll('#fillSourceList input[type="checkbox"]:checked')]
+        .map(c => all.find(L => String(L.id) === c.value)).filter(Boolean);
+    const useHoles = $id('fillHolesToggle').checked;
+    const regions = picked.map(A => {
+        const holes = useHoles ? holesOf(A, all).map(B => B.points) : [];
+        const area = Math.max(0, polygonArea(A.points) - holes.reduce((s, h) => s + polygonArea(h), 0));
+        return {layer: A, holes, area};
+    }).filter(r => r.area > 0);
+    const n = Math.max(1, Math.round(numVal('fillCountInput', 200)));
+    const counts = regions.length ? allocateCounts(regions.map(r => r.area), n) : [];
+    regions.forEach((r, i) => { r.count = counts[i]; });
+    return {regions, n};
+}
+function updateFillPlanInfo() {
+    const {regions, n} = planFill();
+    $id('fillPlanInfo').textContent = regions.length
+        ? `共 ${regions.length} 個區域、總點數 ${n}：` + regions.map(r => `「${r.layer.name}」${r.count} 點`).join('、')
+        : '請至少勾選一個來源圖層。';
+}
+function renderFillSources() {
+    const box = $id('fillSourceList');
+    const all = fillableLayers();
+    // 重新產生清單時保留原本的勾選（第一次開啟才預設勾選顯示中的圖層）
+    const prev = box.querySelector('input[type="checkbox"]')
+        ? new Set([...box.querySelectorAll('input[type="checkbox"]')].filter(c => c.checked).map(c => c.value)) : null;
+    box.innerHTML = '';
+    if (!all.length) {
+        const e = document.createElement('div');
+        e.className = 'empty-note';
+        e.textContent = '目前沒有可填充的圖層：需要「閉合路徑」且至少 3 個點的一般圖層。';
+        box.appendChild(e);
+    }
+    all.forEach(L => {
+        const lab = document.createElement('label');
+        lab.className = 'toggle';
+        const cb = document.createElement('input');
+        cb.type = 'checkbox'; cb.value = L.id; cb.checked = prev ? prev.has(String(L.id)) : L.visible;
+        cb.addEventListener('change', updateFillPlanInfo);
+        const dot = document.createElement('span');
+        dot.className = 'dot'; dot.style.cssText = `width:9px;height:9px;border-radius:50%;background:${L.color}`;
+        const nm = document.createElement('span');
+        nm.textContent = L.name;
+        const meta = document.createElement('span');
+        meta.className = 'meta';
+        meta.textContent = `面積 ${Math.round(polygonArea(L.points))}`;
+        lab.append(cb, dot, nm, meta);
+        box.appendChild(lab);
+    });
+    $id('fillStatus').textContent = '';
+    updateFillPlanInfo();
+}
+['fillCountInput', 'fillHolesToggle'].forEach(id => $id(id).addEventListener('input', updateFillPlanInfo));
+$id('fillHolesToggle').addEventListener('change', updateFillPlanInfo);
+$id('fillRunBtn').addEventListener('click', () => {
+    const statusEl = $id('fillStatus');
+    const {regions} = planFill();
+    if (!regions.length) {
+        statusEl.textContent = '請至少勾選一個有面積的來源圖層。';
+        return;
+    }
+    const layout = fillLayout();
+    const margin = Math.max(0, numVal('fillMarginInput', 0));
+    const replace = $id('fillReplaceToggle').checked;
+    const activeRef = layers[activeLayer];
+    let total = 0, made = 0, removed = 0;
+    regions.forEach(r => {
+        const pts = fillRegionToCount(r.layer.points, r.holes, r.area, r.count, layout, margin)
+            .map(p => [Math.round(p[0] * 100) / 100, Math.round(p[1] * 100) / 100]);
+        if (replace) {
+            const before = layers.length;
+            layers = layers.filter(L => !(L.kind === 'fill' && L.fillSrc === r.layer.name));
+            removed += before - layers.length;
+        }
+        if (!pts.length) return;
+        const fl = newLayer(`${r.layer.name} 背景`, pts, false);
+        fl.kind = 'fill';
+        fl.fillSrc = r.layer.name;
+        fl.size = Math.max(1, Math.round((r.layer.size || DEFAULT_DOT_SIZE) * 0.8));
+        layers.splice(layers.indexOf(r.layer) + 1, 0, fl);
+        total += pts.length;
+        made++;
+    });
+    const ai = layers.indexOf(activeRef);
+    activeLayer = ai >= 0 ? ai : Math.min(activeLayer, layers.length - 1);
+    bindActiveLayer();
+    renderLayers();
+    commitPoints();
+    renderFillSources();
+    const short = regions.reduce((s, r) => s + r.count, 0) - total;
+    statusEl.textContent = `已建立 ${made} 個背景圖層，共 ${total} 個點` +
+        (removed ? `（取代了 ${removed} 個舊背景圖層）` : '') +
+        (short > 0 ? `。區域太小或離邊界距離太大，比設定少了 ${short} 個點。` : '。');
+});
+
 // ---- 線稿用物件預設（.hideout 匯出時每個點要放的裝飾物）：可存多組 ----
 (function () {
-    let store = {list: [], sel: null, seq: 0};
+    let store = {list: [], sel: null, bgSel: null, seq: 0};
     const o = storage.get(OBJ_KEY);
-    if (o && Array.isArray(o.list)) store = {list: o.list.filter(x => x && typeof x === 'object'), sel: o.sel, seq: Number(o.seq) || o.list.length};
+    if (o && Array.isArray(o.list)) store = {list: o.list.filter(x => x && typeof x === 'object'), sel: o.sel, bgSel: o.bgSel == null ? null : o.bgSel, seq: Number(o.seq) || o.list.length};
     const save = () => { storage.set(OBJ_KEY, store); };
     const intStr = (v, d) => {
         const s = String(v == null ? '' : v).trim();
@@ -4492,6 +4855,8 @@ document.addEventListener('click', () => {
     };
     const usable = o => o && String(o.name || '').trim() !== '' && /^-?\d+$/.test(String(o.hash || '').trim());
     function selected() { return store.list.find(o => o.id === store.sel) || store.list[0] || null; }
+    // 背景物件沒有設定時回傳 null（匯出時改用線稿用物件並提示）
+    function bgSelected() { return store.list.find(o => o.id === store.bgSel) || null; }
     function addObject(o) {
         store.seq++;
         const item = {id: store.seq, name: String(o.name || '').trim(), hash: intStr(o.hash, ''), r: intStr(o.r, '0'), fv: intStr(o.fv, '0')};
@@ -4500,11 +4865,14 @@ document.addEventListener('click', () => {
         save(); renderList(); renderSelect();
         return item;
     }
-    function renderSelect() {
-        const sel = $id('objectSelect');
+    function fillSelect(sel, cur, emptyText) {
         sel.innerHTML = '';
         const ok = store.list.filter(usable);
-        if (!ok.length) {
+        if (emptyText) {
+            const op = document.createElement('option');
+            op.value = ''; op.textContent = emptyText;
+            sel.appendChild(op);
+        } else if (!ok.length) {
             const op = document.createElement('option');
             op.value = ''; op.textContent = '（還沒有存任何物件）';
             sel.appendChild(op);
@@ -4514,13 +4882,19 @@ document.addEventListener('click', () => {
             op.value = o.id; op.textContent = o.name;
             sel.appendChild(op);
         });
-        const cur = selected();
         if (cur && usable(cur)) sel.value = cur.id;
+    }
+    function renderSelect() {
+        fillSelect($id('objectSelect'), selected());
+        fillSelect($id('bgObjectSelect'), bgSelected(), '（未設定：使用線稿用物件）');
         updateInfo();
     }
+    function infoOf(o) { return `hash ${o.hash}　r ${o.r}　fv ${o.fv}`; }
     function updateInfo() {
         const o = store.list.find(x => String(x.id) === $id('objectSelect').value);
-        $id('objectInfo').textContent = o ? `hash ${o.hash}　r ${o.r}　fv ${o.fv}` : '請先按「管理物件」新增一組。';
+        $id('objectInfo').textContent = o ? infoOf(o) : '請先按「管理物件」新增一組。';
+        const b = store.list.find(x => String(x.id) === $id('bgObjectSelect').value);
+        $id('bgObjectInfo').textContent = b ? infoOf(b) : '「背景填充」產生的圖層會改用上面的線稿用物件。可在「設定 › 物件」的「背景」欄指定。';
     }
     function renderList() {
         const box = $id('objectList');
@@ -4534,20 +4908,31 @@ document.addEventListener('click', () => {
         }
         const head = document.createElement('div');
         head.className = 'obj-row head';
-        head.innerHTML = '<span>預設</span><span>物件名稱</span><span>hash</span><span>r（旋轉）</span><span>fv</span><span></span>';
+        head.innerHTML = '<span>線稿</span><span>背景</span><span>物件名稱</span><span>hash</span><span>r（旋轉）</span><span>fv</span><span></span>';
         box.appendChild(head);
         store.list.forEach(o => {
             const row = document.createElement('div');
             row.className = 'obj-row';
             const pick = document.createElement('input');
             pick.type = 'radio'; pick.name = 'objectDefault'; pick.checked = selected() === o;
-            pick.title = '設為預設使用的物件'; pick.setAttribute('aria-label', '設為預設使用的物件');
+            pick.title = '設為線稿用物件（一般圖層預設使用）'; pick.setAttribute('aria-label', '設為線稿用物件');
             pick.addEventListener('change', () => {
                 store.sel = o.id;
                 save();
                 renderSelect();
             });
             row.appendChild(pick);
+            // 背景物件：再點一次已選的可以取消
+            const bg = document.createElement('input');
+            bg.type = 'radio'; bg.name = 'objectBg'; bg.checked = store.bgSel === o.id;
+            bg.title = '設為背景物件（背景填充產生的圖層使用），再點一次取消'; bg.setAttribute('aria-label', '設為背景物件');
+            bg.addEventListener('click', () => {
+                if (store.bgSel === o.id) { store.bgSel = null; bg.checked = false; }
+                else store.bgSel = o.id;
+                save();
+                renderSelect();
+            });
+            row.appendChild(bg);
             [['name', 'text', '物件名稱'], ['hash', 'number', 'hash'], ['r', 'number', 'r'], ['fv', 'number', 'fv']].forEach(([key, type, label]) => {
                 const inp = document.createElement('input');
                 inp.type = type; inp.value = o[key]; inp.placeholder = label; inp.setAttribute('aria-label', label);
@@ -4564,6 +4949,7 @@ document.addEventListener('click', () => {
             del.addEventListener('click', () => {
                 store.list = store.list.filter(x => x !== o);
                 if (store.sel === o.id) store.sel = store.list.length ? store.list[0].id : null;
+                if (store.bgSel === o.id) store.bgSel = null;
                 save(); renderList(); renderSelect();
                 $id('objectStatus').textContent = `已刪除物件「${o.name || '未命名'}」。`;
             });
@@ -4598,10 +4984,19 @@ document.addEventListener('click', () => {
         updateInfo();   // 這裡只是這次匯出臨時換一組；預設用哪一組在設定頁圈選
         if (currentWin === 'win-export-hideout') generateBatch();
     });
+    $id('bgObjectSelect').addEventListener('change', () => {
+        updateInfo();
+        if (currentWin === 'win-export-hideout') generateBatch();
+    });
     $id('manageObjectsBtn').addEventListener('click', () => goToObjectSettings());
     // 匯出時用的物件：匯出視窗裡選到的那組（預設是設定頁圈選的）
     window.currentObjectTemplate = function () {
         const o = store.list.find(x => String(x.id) === $id('objectSelect').value);
+        return usable(o) ? {name: o.name.trim(), hash: String(o.hash), r: intStr(o.r, '0'), fv: intStr(o.fv, '0')} : null;
+    };
+    // 背景物件：匯出視窗選到的那組；沒選時回傳 null
+    window.currentBgObjectTemplate = function () {
+        const o = store.list.find(x => String(x.id) === $id('bgObjectSelect').value);
         return usable(o) ? {name: o.name.trim(), hash: String(o.hash), r: intStr(o.r, '0'), fv: intStr(o.fv, '0')} : null;
     };
     window.hasUsableObject = function () {

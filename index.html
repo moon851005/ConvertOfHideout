@@ -57,6 +57,7 @@
         <symbol id="i-chev" viewBox="0 0 24 24"><path d="M9 5l7 7-7 7"/></symbol>
         <symbol id="i-pin" viewBox="0 0 24 24"><path d="M9 3h6l-1 6 3 3v2H7v-2l3-3zM12 14v7"/></symbol>
         <symbol id="i-x" viewBox="0 0 24 24"><path d="M6 6l12 12M18 6L6 18"/></symbol>
+        <symbol id="i-fill" viewBox="0 0 24 24"><path d="M12 3l8.5 6-3.2 11H6.7L3.5 9z"/><circle cx="9" cy="11" r="1.1"/><circle cx="15" cy="11" r="1.1"/><circle cx="12" cy="15.5" r="1.1"/></symbol>
     </defs>
 </svg>
 
@@ -163,6 +164,7 @@
                     <div class="layers-foot">
                         <button type="button" id="showAllLayersBtn" title="把所有圖層都設為顯示">全部顯示</button>
                         <button type="button" id="mergeLayersBtn" title="把顯示中的圖層合併成一個">合併顯示中</button>
+                        <button type="button" data-win="win-fill" class="tone t-teal" title="在封閉圖層內依面積平均放置背景物件"><svg class="ic"><use href="#i-fill"/></svg>背景填充</button>
                     </div>
                 </aside>
 
@@ -223,8 +225,15 @@
     <div class="settings">
         <h2 class="page-title">設定</h2>
         <p class="page-desc">除了「自訂」背景的細部參數需要按「儲存背景設定」之外，其餘設定變更後會自動儲存在這個瀏覽器，下次開啟時沿用。</p>
+        <div class="seg set-tabs" id="settingsTabs" role="tablist" aria-label="設定分類">
+            <button type="button" role="tab" data-tab="output" class="active">座標輸出</button>
+            <button type="button" role="tab" data-tab="objects">物件</button>
+            <button type="button" role="tab" data-tab="sampling">取樣與偵測</button>
+            <button type="button" role="tab" data-tab="look">外觀與背景</button>
+            <button type="button" role="tab" data-tab="project">專案與重設</button>
+        </div>
 
-        <section class="set-card">
+        <section class="set-card" data-tab="output">
             <h3>座標輸出</h3>
             <div class="set-row">
                 <div class="label"><b>Y 軸向上為正</b><span>匯出與預覽時把 Y 軸反向（往上為正）。</span></div>
@@ -252,10 +261,32 @@
             </div>
         </section>
 
-        <section class="set-card" id="objectCard">
-            <h3>線稿用物件</h3>
+        <section class="set-card" data-tab="output">
+            <h3>藏身處絕對邊界</h3>
+            <div class="set-row">
+                <div class="label"><b>顯示藏身處邊界</b><span>用「匯出座標」輸入整個藏身處可放置的範圍，畫面上會畫出這個固定的框，方便確認圖案有沒有超出。四個值都填了才會顯示；超出的點數會在統計列提示。</span></div>
+                <div class="ctl"><input type="checkbox" id="showHideoutBoundsToggle" checked aria-label="顯示藏身處邊界"></div>
+            </div>
+            <div class="set-row">
+                <div class="label"><b>X 範圍</b><span>最小值與最大值（匯出座標）。</span></div>
+                <div class="ctl">
+                    <input type="number" id="hideoutXMin" step="1" placeholder="X 最小" aria-label="藏身處 X 最小值">
+                    <input type="number" id="hideoutXMax" step="1" placeholder="X 最大" aria-label="藏身處 X 最大值">
+                </div>
+            </div>
+            <div class="set-row">
+                <div class="label"><b>Y 範圍</b><span>最小值與最大值（匯出座標）。</span></div>
+                <div class="ctl">
+                    <input type="number" id="hideoutYMin" step="1" placeholder="Y 最小" aria-label="藏身處 Y 最小值">
+                    <input type="number" id="hideoutYMax" step="1" placeholder="Y 最大" aria-label="藏身處 Y 最大值">
+                </div>
+            </div>
+        </section>
+
+        <section class="set-card" id="objectCard" data-tab="objects">
+            <h3>物件</h3>
             <div class="set-row" style="border-bottom:0;padding-bottom:4px">
-                <div class="label"><span>匯出 .hideout 時，每個座標點要放的裝飾物。可以存多組，圈選的那一組是預設使用的；匯出視窗裡也可以臨時換別組。修改後自動儲存。</span></div>
+                <div class="label"><span>匯出 .hideout 時，每個座標點要放的裝飾物。可以存多組：「線稿」欄圈選的是一般圖層預設使用的物件，「背景」欄圈選的是「背景填充」產生的圖層使用的物件。匯出視窗裡也可以臨時換別組。修改後自動儲存。</span></div>
             </div>
             <div class="obj-list" id="objectList"></div>
             <div class="obj-add">
@@ -265,7 +296,7 @@
             </div>
         </section>
 
-        <section class="set-card">
+        <section class="set-card" data-tab="sampling">
             <h3>取樣與偵測</h3>
             <div class="set-row">
                 <div class="label"><b>點位間距</b><span>只有在「匯入圖片」視窗的「總點數」留空時才會使用；筆觸描邊固定使用這個間距。越小越密；設為 3 時密度接近先前藏身處檔案的範例（216 個點，平均間距 2.96）。</span></div>
@@ -288,7 +319,7 @@
             </div>
         </section>
 
-        <section class="set-card">
+        <section class="set-card" data-tab="look">
             <h3>外觀與背景</h3>
             <div class="set-row" style="align-items:flex-start">
                 <div class="label"><b>背景主題</b><span>選一個預設主題即可；選「自訂」才會出現顏色、光暈強度、背景圖片等細部設定。選擇會自動儲存。</span></div>
@@ -336,7 +367,7 @@
             </div>
         </section>
 
-        <section class="set-card">
+        <section class="set-card" data-tab="project">
             <h3>工作進度</h3>
             <div class="set-row">
                 <div class="label"><b>自動保存</b><span>座標、原點、邊界與原圖會自動保存在「這台裝置的這個瀏覽器」裡，重新整理或下次開啟時自動還原。資料不會上傳，也不會跟其他人或其他裝置共用；清除瀏覽器資料時會一併消失。</span><span class="status" id="sessionStatus"></span></div>
@@ -352,7 +383,7 @@
             </div>
         </section>
 
-        <section class="set-card">
+        <section class="set-card" data-tab="project">
             <h3>重設</h3>
             <div class="set-row">
                 <div class="label"><b>恢復預設值</b><span>把「座標輸出」「取樣與偵測」以及工作區的滑桿參數恢復成預設值（不影響背景設定與目前的座標）。</span><span class="status" id="settingsStatus"></span></div>
@@ -485,7 +516,7 @@
 
                             <div class="panel-title">總點數</div>
                             <div class="row" style="margin-top:0">
-                                <input type="number" id="targetCountInput" min="1" step="1" placeholder="留空＝依點位間距" style="width:170px">
+                                <input type="number" id="targetCountInput" value="200" min="1" step="1" placeholder="留空＝依點位間距" style="width:170px">
                             </div>
                             <div class="hint">所有圖層加起來的點數，依各條線的長度比例分配。智慧選取、一鍵選取外框也用這個數字。</div>
                             <div class="row">
@@ -506,12 +537,17 @@
                 <header class="win-head"><h2><svg class="ic"><use href="#i-export"/></svg>匯出<span class="sub">.hideout 批次設定，複製後自動關閉</span></h2><button type="button" class="win-close ghost" aria-label="關閉">✕</button></header>
                 <div class="win-body">
                     <div class="panel-title" style="margin-top:0">線稿用物件</div>
-                    <p class="desc">座標清單裡每一個點都會套用同一組物件設定（名稱、hash、r、fv），只換成各自的 x, y。開啟視窗或換一組物件時會自動重新產生；物件在「設定 › 線稿用物件」新增與修改。</p>
+                    <p class="desc">一般圖層的每一個點套用「線稿用物件」，「背景填充」產生的圖層套用「背景物件」（名稱、hash、r、fv），只換成各自的 x, y。開啟視窗或換一組物件時會自動重新產生；物件在「設定 › 物件」新增與修改。</p>
                     <div class="row" style="margin-top:0">
                         <select id="objectSelect" aria-label="線稿用物件" style="flex:1 1 220px"></select>
                         <button type="button" id="manageObjectsBtn"><svg class="ic"><use href="#i-settings"/></svg>管理物件</button>
                     </div>
                     <div class="hint" id="objectInfo"></div>
+                    <div class="panel-title">背景物件</div>
+                    <div class="row" style="margin-top:0">
+                        <select id="bgObjectSelect" aria-label="背景物件" style="flex:1 1 220px"></select>
+                    </div>
+                    <div class="hint" id="bgObjectInfo"></div>
                     <div class="row">
                         <button id="batchCopyBtn" class="primary"><svg class="ic"><use href="#i-copy"/></svg>一鍵複製批次結果</button>
                     </div>
@@ -664,11 +700,55 @@
                         <label class="field">Y <input type="number" id="originYInput" step="1" placeholder="0" style="width:104px"></label>
                         <button id="setOriginNumBtn" class="tone t-green"><svg class="ic"><use href="#i-check"/></svg>套用座標值</button>
                     </div>
+                    <div class="row" id="originHideoutRow" hidden>
+                        <button id="originHideoutCenterBtn" class="tone t-violet" title="把原點的座標值設成藏身處邊界的中心點"><svg class="ic"><use href="#i-center"/></svg>設置在藏身處中心點</button>
+                        <span class="hint" id="originHideoutInfo" style="margin:0"></span>
+                    </div>
                     <div class="hint">只接受整數。套用後畫面上的原點會顯示成這個數值。</div>
                     <div class="panel-title">原點的位置</div>
                     <div class="row">
                         <button id="modeOrigin"><svg class="ic"><use href="#i-pointer"/></svg>在圖上點選原點位置</button>
                     </div>
+                </div>
+            </section>
+
+            <section class="win win-adj" id="win-fill" data-size="md" hidden aria-label="背景填充">
+                <header class="win-head"><h2><svg class="ic"><use href="#i-fill"/></svg>背景填充<span class="sub">在封閉圖層內依面積平均放點</span></h2><button type="button" class="win-close ghost" aria-label="關閉">✕</button></header>
+                <div class="win-body">
+                    <details class="help">
+                        <summary>使用說明</summary>
+                        <div>
+                            <p>勾選要填充的封閉圖層，設定總點數後按「建立背景圖層」。總點數會依各區域的面積比例分配，每個來源圖層會產生一個「背景」圖層，匯出時使用「背景物件」。</p>
+                            <p><b>挖空</b>：勾選後，被另一個封閉圖層完全包住的封閉圖層（例如臉的外框裡的眼睛）會被當成洞，洞裡不放點。</p>
+                            <p><b>離邊界距離</b>：點與圖層邊線的最小距離（原圖像素），避免背景物件壓到線稿。</p>
+                        </div>
+                    </details>
+                    <div class="panel-title" style="margin-top:0">來源圖層</div>
+                    <div class="fill-src" id="fillSourceList"></div>
+                    <div class="optrow">
+                        <div class="row" style="margin-top:0">
+                            <label class="field">總點數
+                                <input type="number" id="fillCountInput" value="200" min="1" step="1" style="width:110px">
+                            </label>
+                            <label class="field">離邊界距離
+                                <input type="number" id="fillMarginInput" value="0" min="0" step="0.5" style="width:90px">
+                            </label>
+                        </div>
+                        <div class="row">
+                            <span class="field" style="margin:0">排列</span>
+                            <label class="toggle"><input type="radio" name="fillLayout" value="hex" checked> 六角交錯</label>
+                            <label class="toggle"><input type="radio" name="fillLayout" value="grid"> 方格</label>
+                        </div>
+                        <div class="row">
+                            <label class="toggle"><input type="checkbox" id="fillHolesToggle" checked> 被包住的封閉圖層視為挖空</label>
+                        </div>
+                        <div class="row">
+                            <label class="toggle"><input type="checkbox" id="fillReplaceToggle" checked> 取代同來源的舊背景圖層</label>
+                        </div>
+                    </div>
+                    <div class="hint" id="fillPlanInfo"></div>
+                    <div class="row"><button type="button" id="fillRunBtn" class="primary"><svg class="ic"><use href="#i-fill"/></svg>建立背景圖層</button></div>
+                    <div class="status" id="fillStatus"></div>
                 </div>
             </section>
 
